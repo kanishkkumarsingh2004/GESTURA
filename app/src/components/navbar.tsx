@@ -33,6 +33,7 @@ export function Navbar() {
   const navLinks = [
     { href: "/studio", label: "Studio" },
     { href: "/gestures", label: "Gesture Library" },
+    { href: "/contribute", label: "Contribute" },
     { href: "/history", label: "History" },
     { href: "/about", label: "About" },
   ];

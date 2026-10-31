@@ -15,7 +15,8 @@ from uuid import uuid4
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, status
+from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFile, status
+from fastapi.responses import FileResponse
 
 from model.inference import InferenceEngine, PredictionResult
 from server.api_models import (
@@ -34,6 +35,17 @@ from server.api_models import (
 )
 from server.audio_service import GESTURE_TEXT, AudioService
 from server.camera_server import CameraServer
+from server.contribution_models import (
+    ContributionListResponse,
+    ContributionMetadata,
+    ContributionUploadResponse,
+    ExtractFramesRequest,
+    ExtractFramesResponse,
+    FrameListResponse,
+    ReviewContributionRequest,
+    SubmitContributionRequest,
+)
+from server.contribution_service import ContributionService
 from server.prediction_service import PredictionService, StablePredictionEvent
 from server.session_manager import SessionState
 from utils.logging import get_app_logger
@@ -76,11 +88,15 @@ class GestureAPI:
         self,
         config_path: str = "config.yaml",
         engine: Optional[InferenceEngine] = None,
+        contribution_service: Optional[ContributionService] = None,
     ) -> None:
         self.config_path = config_path
         self.preprocessor = Preprocessor(load_preprocessing_config(config_path))
         self.engine: InferenceEngine = engine or InferenceEngine(
             config_path=config_path
+        )
+        self.contribution_service: ContributionService = (
+            contribution_service or ContributionService()
         )
         self._engine_lock = threading.Lock()
         self._sessions: dict[str, _SessionScope] = {}
@@ -400,6 +416,124 @@ class GestureAPI:
         def remove_session(session_id: str) -> dict[str, str]:
             self._remove_session(session_id)
             return {"session_id": session_id, "status": "removed"}
+
+        # ------------------------------------------------ contributions
+        @app.post(
+            "/contributions/upload",
+            response_model=ContributionUploadResponse,
+            status_code=status.HTTP_201_CREATED,
+        )
+        async def upload_contribution(
+            file: UploadFile = File(...),
+        ) -> ContributionUploadResponse:
+            meta = await self.contribution_service.handle_video_upload(file)
+            return ContributionUploadResponse(
+                contribution_id=meta.contribution_id,
+                video_filename=meta.video_filename,
+                duration_seconds=meta.video_duration_seconds,
+                fps=meta.video_fps,
+                resolution=meta.video_resolution,
+                total_video_frames=meta.total_video_frames,
+                status=meta.status,
+            )
+
+        @app.post(
+            "/contributions/{contribution_id}/extract",
+            response_model=ExtractFramesResponse,
+        )
+        def extract_contribution_frames(
+            contribution_id: str,
+            payload: ExtractFramesRequest = ExtractFramesRequest(),
+        ) -> ExtractFramesResponse:
+            return self.contribution_service.extract_and_validate_frames(
+                contribution_id=contribution_id,
+                sample_interval=payload.sample_interval,
+                max_frames=payload.max_frames,
+            )
+
+        @app.get(
+            "/contributions/{contribution_id}",
+            response_model=ContributionMetadata,
+        )
+        def get_contribution(contribution_id: str) -> ContributionMetadata:
+            return self.contribution_service.get_contribution(contribution_id)
+
+        @app.get(
+            "/contributions/{contribution_id}/frames",
+            response_model=FrameListResponse,
+        )
+        def get_contribution_frames(contribution_id: str) -> FrameListResponse:
+            frames = self.contribution_service.get_frames(contribution_id)
+            active = sum(1 for f in frames if f.status == "active")
+            return FrameListResponse(
+                contribution_id=contribution_id,
+                total_frames=len(frames),
+                active_frames=active,
+                frames=frames,
+            )
+
+        @app.get("/contributions/{contribution_id}/frames/{frame_id}")
+        def get_contribution_frame_file(
+            contribution_id: str, frame_id: str
+        ) -> FileResponse:
+            file_path = self.contribution_service.get_frame_file_path(
+                contribution_id, frame_id, thumb=False
+            )
+            return FileResponse(file_path, media_type="image/jpeg")
+
+        @app.get("/contributions/{contribution_id}/frames/{frame_id}/thumb")
+        def get_contribution_frame_thumb(
+            contribution_id: str, frame_id: str
+        ) -> FileResponse:
+            file_path = self.contribution_service.get_frame_file_path(
+                contribution_id, frame_id, thumb=True
+            )
+            return FileResponse(file_path, media_type="image/jpeg")
+
+        @app.delete("/contributions/{contribution_id}/frames/{frame_id}")
+        def delete_contribution_frame(
+            contribution_id: str, frame_id: str
+        ) -> dict[str, Any]:
+            return self.contribution_service.delete_frame(
+                contribution_id, frame_id
+            )
+
+        @app.post(
+            "/contributions/{contribution_id}/submit",
+            response_model=ContributionMetadata,
+        )
+        def submit_contribution(
+            contribution_id: str,
+            payload: SubmitContributionRequest,
+        ) -> ContributionMetadata:
+            return self.contribution_service.submit_contribution(
+                contribution_id, payload
+            )
+
+        @app.get("/contributions", response_model=ContributionListResponse)
+        def list_contributions(
+            status: Optional[str] = Query(None),
+        ) -> ContributionListResponse:
+            items = self.contribution_service.list_contributions(
+                status_filter=status
+            )
+            return ContributionListResponse(
+                count=len(items), contributions=items
+            )
+
+        @app.post(
+            "/contributions/{contribution_id}/review",
+            response_model=ContributionMetadata,
+        )
+        def review_contribution(
+            contribution_id: str,
+            payload: ReviewContributionRequest,
+        ) -> ContributionMetadata:
+            return self.contribution_service.review_contribution(
+                contribution_id=contribution_id,
+                approved=payload.approved,
+                rejection_reason=payload.rejection_reason,
+            )
 
         return app
 

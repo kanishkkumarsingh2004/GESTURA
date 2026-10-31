@@ -39,6 +39,11 @@ export function Footer() {
                 </Link>
               </li>
               <li>
+                <Link href="/contribute" className="hover:text-yellow-accent transition-colors">
+                  Contribute a Gesture
+                </Link>
+              </li>
+              <li>
                 <Link href="/history" className="hover:text-yellow-accent transition-colors">
                   Session History
                 </Link>

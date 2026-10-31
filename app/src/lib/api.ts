@@ -338,3 +338,240 @@ export async function removeSession(
     { method: "DELETE" }
   );
 }
+
+/* ------------------------------------------------------------------ */
+/* Contributions (Community Dataset Pipeline)                         */
+/* ------------------------------------------------------------------ */
+
+export type FrameMetadata = {
+  frame_id: string;
+  filename: string;
+  thumb_filename: string;
+  timestamp_ms: number;
+  frame_index: number;
+  width: number;
+  height: number;
+  sharpness_score: number;
+  is_blurry: boolean;
+  is_duplicate: boolean;
+  is_dark: boolean;
+  status: "active" | "removed";
+};
+
+export type QualityReport = {
+  total_frames_extracted: number;
+  usable_frames_count: number;
+  blurry_frames_count: number;
+  duplicate_frames_count: number;
+  dark_frames_count: number;
+  warnings: string[];
+};
+
+export type ContributionMetadata = {
+  contribution_id: string;
+  status: "uploaded" | "extracted" | "pending_approval" | "approved" | "rejected";
+  video_filename: string;
+  video_duration_seconds: number;
+  video_fps: number;
+  video_resolution: [number, number];
+  total_video_frames: number;
+  gesture_name?: string | null;
+  meaning?: string | null;
+  sign_language?: string | null;
+  category?: string | null;
+  description?: string | null;
+  gesture_type?: "static" | "dynamic" | "unknown" | null;
+  contributor_id?: string | null;
+  sample_interval: number;
+  usable_frame_count: number;
+  quality_report?: QualityReport | null;
+  rejection_reason?: string | null;
+  created_at: number;
+  updated_at: number;
+};
+
+export type ContributionUploadResponse = {
+  contribution_id: string;
+  video_filename: string;
+  duration_seconds: number;
+  fps: number;
+  resolution: [number, number];
+  total_video_frames: number;
+  status: string;
+};
+
+export type ExtractFramesResponse = {
+  contribution_id: string;
+  sample_interval: number;
+  total_extracted: number;
+  usable_count: number;
+  quality_report: QualityReport;
+  frames: FrameMetadata[];
+};
+
+export type FrameListResponse = {
+  contribution_id: string;
+  total_frames: number;
+  active_frames: number;
+  frames: FrameMetadata[];
+};
+
+export type SubmitContributionRequest = {
+  gesture_name: string;
+  meaning: string;
+  sign_language: string;
+  category: string;
+  description?: string | null;
+  gesture_type?: "static" | "dynamic" | "unknown";
+  contributor_id?: string | null;
+};
+
+export type ContributionSummary = {
+  contribution_id: string;
+  gesture_name?: string | null;
+  meaning?: string | null;
+  sign_language?: string | null;
+  category?: string | null;
+  gesture_type?: string | null;
+  video_duration_seconds: number;
+  usable_frame_count: number;
+  status: string;
+  created_at: number;
+};
+
+export type ContributionListResponse = {
+  count: number;
+  contributions: ContributionSummary[];
+};
+
+export async function uploadContributionVideo(
+  file: File
+): Promise<ContributionUploadResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}/contributions/upload`, {
+      method: "POST",
+      body: formData,
+    });
+  } catch (err) {
+    if (!BACKEND_URL) {
+      throw new Error(
+        "Backend URL is not configured. Please set BACK_END_url in your .env file."
+      );
+    }
+    throw err;
+  }
+
+  if (!res.ok) {
+    let detail = "";
+    try {
+      const body = (await res.json()) as { detail?: string };
+      detail = body.detail || "";
+    } catch {
+      detail = res.statusText;
+    }
+    throw new Error(detail || `Video upload failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function extractContributionFrames(
+  contributionId: string,
+  sampleInterval: number = 5,
+  maxFrames: number = 40
+): Promise<ExtractFramesResponse> {
+  return request<ExtractFramesResponse>(
+    `/contributions/${contributionId}/extract`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sample_interval: sampleInterval,
+        max_frames: maxFrames,
+      }),
+    }
+  );
+}
+
+export async function getContribution(
+  contributionId: string
+): Promise<ContributionMetadata> {
+  return request<ContributionMetadata>(`/contributions/${contributionId}`);
+}
+
+export async function getContributionFrames(
+  contributionId: string
+): Promise<FrameListResponse> {
+  return request<FrameListResponse>(`/contributions/${contributionId}/frames`);
+}
+
+export function getFrameImageUrl(
+  contributionId: string,
+  frameId: string,
+  thumb: boolean = false
+): string {
+  return `${BASE_URL}/contributions/${contributionId}/frames/${frameId}${
+    thumb ? "/thumb" : ""
+  }`;
+}
+
+export async function deleteContributionFrame(
+  contributionId: string,
+  frameId: string
+): Promise<{
+  contribution_id: string;
+  frame_id: string;
+  status: string;
+  usable_count: number;
+}> {
+  return request<{
+    contribution_id: string;
+    frame_id: string;
+    status: string;
+    usable_count: number;
+  }>(`/contributions/${contributionId}/frames/${frameId}`, {
+    method: "DELETE",
+  });
+}
+
+export async function submitContribution(
+  contributionId: string,
+  data: SubmitContributionRequest
+): Promise<ContributionMetadata> {
+  return request<ContributionMetadata>(
+    `/contributions/${contributionId}/submit`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    }
+  );
+}
+
+export async function listContributions(
+  status?: string
+): Promise<ContributionListResponse> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : "";
+  return request<ContributionListResponse>(`/contributions${query}`);
+}
+
+export async function reviewContribution(
+  contributionId: string,
+  approved: boolean,
+  rejectionReason?: string
+): Promise<ContributionMetadata> {
+  return request<ContributionMetadata>(
+    `/contributions/${contributionId}/review`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        approved,
+        rejection_reason: rejectionReason,
+      }),
+    }
+  );
+}
