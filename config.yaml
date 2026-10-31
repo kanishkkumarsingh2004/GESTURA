@@ -1,0 +1,71 @@
+app:
+  name: Gesture Recognition Assistant
+  version: 1.0.0
+  environment: development
+
+model:
+  architecture: vgg16
+  checkpoint: outputs/checkpoints/best_model.pth
+  input_width: 224
+  input_height: 224
+  num_classes: 22
+  pretrained: true
+
+device:
+  preference: auto
+
+camera:
+  enabled: true
+  target_fps: 20
+  frame_skip: 2
+
+detection:
+  confidence_threshold: 0.85
+  confirmation_frames: 5
+  smoothing_window: 5
+  cooldown_seconds: 1.5
+  unknown_class_enabled: true
+
+audio:
+  enabled: true
+  autoplay_after_user_activation: true
+  duplicate_prevention: true
+
+training:
+  epochs: 50
+  batch_size: 32
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  optimizer: adamw
+  loss: cross_entropy
+  early_stopping: true
+  patience: 8
+  seed: 42
+
+logging:
+  level: INFO
+  save_to_file: true
+
+class_mapping:
+  C: 0
+  DOWN: 1
+  FIST: 2
+  FIVE: 3
+  FOUR: 4
+  HANG: 5
+  HEAVY: 6
+  INDEX: 7
+  INDEX_LEFT: 8
+  INDEX_RIGHT: 9
+  LEFT: 10
+  NONE: 11
+  OK: 12
+  PALM: 13
+  PALM_M: 14
+  PALM_U: 15
+  RIGHT: 16
+  THREE: 17
+  THUMBS_DOWN: 18
+  THUMBS_UP: 19
+  TWO: 20
+  UP: 21

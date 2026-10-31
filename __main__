@@ -1,0 +1,16 @@
+2026-10-30 21:40:15 | INFO | app | Application starting
+2026-10-30 21:40:15 | INFO | app | Application initialized
+2026-10-30 21:40:33 | ERROR | app | Model load failed: Checkpoint not found: outputs/checkpoints/best_model.pth
+2026-10-30 21:40:38 | ERROR | app | Model load failed: Checkpoint not found: outputs/checkpoints/best_model.pth
+2026-10-30 21:40:42 | INFO | app | Application starting
+2026-10-30 21:40:42 | INFO | app | Application initialized
+2026-10-30 21:40:44 | INFO | app | Application starting
+2026-10-30 21:40:44 | INFO | app | Application initialized
+2026-10-30 21:41:38 | INFO | app | Application starting
+2026-10-30 21:41:38 | INFO | app | Application initialized
+2026-10-30 21:41:51 | ERROR | app | Model load failed: Checkpoint not found: outputs/checkpoints/best_model.pth
+2026-10-30 21:41:57 | ERROR | app | Model load failed: Checkpoint not found: outputs/checkpoints/best_model.pth
+2026-10-30 21:42:32 | INFO | app | Application starting
+2026-10-30 21:42:32 | INFO | app | Application initialized
+2026-10-30 22:33:50 | INFO | app | Application starting
+2026-10-30 22:33:50 | INFO | app | Application initialized
