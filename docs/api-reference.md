@@ -633,22 +633,32 @@ curl -X POST "http://localhost:8000/contributions/c_d4f8e12b_20261031/submit" \
 
 ## 6. Moderation APIs (`Contributions - Moderation`)
 
+> [!WARNING]
+> **Administrative Access Control**: Both moderation endpoints (`GET /contributions` and `POST /contributions/{id}/review`) are strictly protected. They require a valid `X-Admin-Key` header verified against `GESTURA_ADMIN_TOKEN` via constant-time `hmac.compare_digest`.
+> If `GESTURA_ADMIN_TOKEN` is unset or empty, the server fails closed and immediately returns `HTTP 503 Service Unavailable`.
+
 ### 6.1 `GET /contributions`
-Lists contributions across pending, approved, and rejected datasets with optional status and region filters.
+Lists contributions across pending, approved, and rejected datasets with optional status and region filters. Restricted to administrators and moderators.
 
 - **Method**: `GET`
 - **Path**: `/contributions`
-- **Authentication**: None
+- **Authentication**: **Admin Only** (`X-Admin-Key` required)
+- **Request Headers**:
+  - `X-Admin-Key` (string, required): Admin authentication secret key.
 - **Query Parameters**:
   - `status` (string, optional): Filter by status (`pending_approval`, `approved`, `rejected`).
   - `region` (string, optional): Filter by region (`NORTH`, `SOUTH`, etc.).
 - **Status Codes**:
   - `200 OK`: Contributions list returned.
+  - `401 Unauthorized`: Missing `X-Admin-Key` header.
+  - `403 Forbidden`: Invalid `X-Admin-Key` supplied.
+  - `503 Service Unavailable`: `GESTURA_ADMIN_TOKEN` is not configured or empty on the server.
 
 #### Request Example (cURL)
 ```bash
 curl -X GET "http://localhost:8000/contributions?status=pending_approval&region=NORTH" \
-  -H "Accept: application/json"
+  -H "Accept: application/json" \
+  -H "X-Admin-Key: your_secret_admin_token"
 ```
 
 #### Response Example (`200 OK`)
@@ -680,13 +690,13 @@ curl -X GET "http://localhost:8000/contributions?status=pending_approval&region=
 ---
 
 ### 6.2 `POST /contributions/{contribution_id}/review`
-Approves or rejects a submitted contribution. Requires `X-Admin-Key` header when `GESTURA_ADMIN_TOKEN` is configured in the environment.
+Approves or rejects a submitted contribution, moving it from `pending/` into `approved/` or `rejected/` regional storage. Restricted to administrators and moderators.
 
 - **Method**: `POST`
 - **Path**: `/contributions/{contribution_id}/review`
-- **Authentication**: Optional / Conditional (`X-Admin-Key` matching `GESTURA_ADMIN_TOKEN` if set).
+- **Authentication**: **Admin Only** (`X-Admin-Key` required)
 - **Request Headers**:
-  - `X-Admin-Key` (string, optional): Admin secret token.
+  - `X-Admin-Key` (string, required): Admin secret token.
 - **Request Body**: `application/json`
   ```json
   {
@@ -696,8 +706,10 @@ Approves or rejects a submitted contribution. Requires `X-Admin-Key` header when
   ```
 - **Status Codes**:
   - `200 OK`: Contribution successfully moderated and moved to `approved/` or `rejected/` directory.
-  - `403 Forbidden`: Invalid or missing `X-Admin-Key` when admin token is enforced.
+  - `401 Unauthorized`: Missing `X-Admin-Key` header.
+  - `403 Forbidden`: Invalid `X-Admin-Key` supplied.
   - `404 Not Found`: Contribution ID not found.
+  - `503 Service Unavailable`: `GESTURA_ADMIN_TOKEN` is not configured or empty on the server.
 
 #### Request Example (cURL)
 ```bash
@@ -739,6 +751,6 @@ curl -X POST "http://localhost:8000/contributions/c_d4f8e12b_20261031/review" \
 | `GET` | `/contributions/{id}/frames/{frame_id}/thumb` | Stream 224x224 frame thumbnail | Ingestion | Public | Pre-existing |
 | `DELETE` | `/contributions/{id}/frames/{frame_id}` | Exclude frame from dataset | Ingestion | Public | Pre-existing |
 | `POST` | `/contributions/{id}/submit` | Submit metadata & enter moderation queue | Ingestion | Public | Pre-existing |
-| `GET` | `/contributions` | List contributions with status/region filters | Moderation | Public / Admin | Pre-existing |
-| `POST` | `/contributions/{id}/review` | Moderate (approve/reject) submission | Moderation | `X-Admin-Key` | Pre-existing |
+| `GET` | `/contributions` | List contributions with status/region filters | Moderation | **Admin (`X-Admin-Key`)** | Protected |
+| `POST` | `/contributions/{id}/review` | Moderate (approve/reject) submission | Moderation | **Admin (`X-Admin-Key`)** | Protected |
 

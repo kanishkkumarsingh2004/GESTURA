@@ -106,8 +106,9 @@ def _create_synthetic_video(
 
 
 @pytest.fixture()
-def contrib_env(tmp_path: Path):
+def contrib_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Provides an isolated ContributionService and FastAPI TestClient."""
+    monkeypatch.delenv("GESTURA_ADMIN_TOKEN", raising=False)
     base_dir = tmp_path / "contributions" / "india"
     service = ContributionService(base_dir=base_dir)
     api = GestureAPI(engine=FakeEngine(), contribution_service=service)
@@ -311,8 +312,9 @@ def test_conditional_sign_language_variety_validation(contrib_env):
     assert resp3.json()["variety_name"] == "Delhi NCR Variety"
 
 
-def test_correct_regional_storage_and_moderation(contrib_env):
+def test_correct_regional_storage_and_moderation(contrib_env, monkeypatch):
     """Test hierarchical regional folder storage under data/contributions/india/."""
+    monkeypatch.setenv("GESTURA_ADMIN_TOKEN", "test-admin-secret-456")
     service, client, tmp_path = contrib_env
     cid = _upload_and_extract(client, tmp_path, "storage_test.mp4")
 
@@ -338,8 +340,12 @@ def test_correct_regional_storage_and_moderation(contrib_env):
     assert (expected_pending / "metadata.json").is_file()
     assert (expected_pending / "frames").is_dir()
 
-    # Approve contribution
-    appr_resp = client.post(f"/contributions/{cid}/review", json={"approved": True})
+    # Approve contribution with admin credentials
+    appr_resp = client.post(
+        f"/contributions/{cid}/review",
+        json={"approved": True},
+        headers={"X-Admin-Key": "test-admin-secret-456"},
+    )
     assert appr_resp.status_code == 200
     assert appr_resp.json()["status"] == "approved"
 
@@ -425,8 +431,112 @@ def test_dataset_export_preserving_geographic_metadata(tmp_path: Path):
     assert entry["qualified_label"] == "VANAKKAM__south__chennai_dialect"
 
 
-def test_moderation_admin_token_protection(contrib_env, monkeypatch):
-    """Test that moderation review enforces X-Admin-Key when GESTURA_ADMIN_TOKEN is configured."""
+# ------------------------------------------------------------------ Admin Auth Tests
+def test_get_contributions_unconfigured_token_returns_503(contrib_env, monkeypatch):
+    """Test GET /contributions returns HTTP 503 if GESTURA_ADMIN_TOKEN is missing or empty."""
+    service, client, tmp_path = contrib_env
+
+    # 1. Token unset
+    monkeypatch.delenv("GESTURA_ADMIN_TOKEN", raising=False)
+    res_unset = client.get("/contributions")
+    assert res_unset.status_code == 503
+    assert "not configured" in res_unset.json()["detail"]
+
+    # 2. Token empty or whitespace
+    monkeypatch.setenv("GESTURA_ADMIN_TOKEN", "   ")
+    res_empty = client.get("/contributions", headers={"X-Admin-Key": "any-key"})
+    assert res_empty.status_code == 503
+    assert "not configured" in res_empty.json()["detail"]
+
+
+def test_get_contributions_missing_key_header_returns_401(contrib_env, monkeypatch):
+    """Test GET /contributions returns HTTP 401 when X-Admin-Key header is absent or empty."""
+    service, client, tmp_path = contrib_env
+    monkeypatch.setenv("GESTURA_ADMIN_TOKEN", "prod-secret-999")
+
+    # Missing header
+    res_missing = client.get("/contributions")
+    assert res_missing.status_code == 401
+    assert "Missing required admin authentication key" in res_missing.json()["detail"]
+
+    # Empty header
+    res_empty_hdr = client.get("/contributions", headers={"X-Admin-Key": ""})
+    assert res_empty_hdr.status_code == 401
+
+
+def test_get_contributions_invalid_key_header_returns_403(contrib_env, monkeypatch):
+    """Test GET /contributions returns HTTP 403 when X-Admin-Key is incorrect."""
+    service, client, tmp_path = contrib_env
+    monkeypatch.setenv("GESTURA_ADMIN_TOKEN", "prod-secret-999")
+
+    res = client.get("/contributions", headers={"X-Admin-Key": "wrong-secret-token"})
+    assert res.status_code == 403
+    assert "Invalid admin authentication key" in res.json()["detail"]
+
+
+def test_get_contributions_valid_key_succeeds(contrib_env, monkeypatch):
+    """Test GET /contributions returns HTTP 200 with contribution list when authenticated."""
+    service, client, tmp_path = contrib_env
+    monkeypatch.setenv("GESTURA_ADMIN_TOKEN", "prod-secret-999")
+
+    res = client.get("/contributions", headers={"X-Admin-Key": "prod-secret-999"})
+    assert res.status_code == 200
+    data = res.json()
+    assert "count" in data
+    assert "contributions" in data
+    assert isinstance(data["contributions"], list)
+
+
+def test_post_review_unconfigured_token_returns_503(contrib_env, monkeypatch):
+    """Test POST /contributions/{id}/review returns HTTP 503 when GESTURA_ADMIN_TOKEN is missing or empty."""
+    service, client, tmp_path = contrib_env
+    cid = _upload_and_extract(client, tmp_path, "rev_503.mp4")
+
+    # 1. Unset token
+    monkeypatch.delenv("GESTURA_ADMIN_TOKEN", raising=False)
+    res_unset = client.post(
+        f"/contributions/{cid}/review",
+        json={"approved": True},
+        headers={"X-Admin-Key": "any-key"},
+    )
+    assert res_unset.status_code == 503
+    assert "not configured" in res_unset.json()["detail"]
+
+    # 2. Empty token
+    monkeypatch.setenv("GESTURA_ADMIN_TOKEN", "")
+    res_empty = client.post(f"/contributions/{cid}/review", json={"approved": True})
+    assert res_empty.status_code == 503
+    assert "not configured" in res_empty.json()["detail"]
+
+
+def test_post_review_missing_key_header_returns_401(contrib_env, monkeypatch):
+    """Test POST /contributions/{id}/review returns HTTP 401 when X-Admin-Key is omitted."""
+    service, client, tmp_path = contrib_env
+    cid = _upload_and_extract(client, tmp_path, "rev_401.mp4")
+    monkeypatch.setenv("GESTURA_ADMIN_TOKEN", "prod-secret-999")
+
+    res = client.post(f"/contributions/{cid}/review", json={"approved": True})
+    assert res.status_code == 401
+    assert "Missing required admin authentication key" in res.json()["detail"]
+
+
+def test_post_review_invalid_key_header_returns_403(contrib_env, monkeypatch):
+    """Test POST /contributions/{id}/review returns HTTP 403 when X-Admin-Key does not match."""
+    service, client, tmp_path = contrib_env
+    cid = _upload_and_extract(client, tmp_path, "rev_403.mp4")
+    monkeypatch.setenv("GESTURA_ADMIN_TOKEN", "prod-secret-999")
+
+    res = client.post(
+        f"/contributions/{cid}/review",
+        json={"approved": True},
+        headers={"X-Admin-Key": "incorrect-password"},
+    )
+    assert res.status_code == 403
+    assert "Invalid admin authentication key" in res.json()["detail"]
+
+
+def test_post_review_valid_key_succeeds(contrib_env, monkeypatch):
+    """Test POST /contributions/{id}/review succeeds with HTTP 200 when properly authenticated."""
     service, client, tmp_path = contrib_env
     cid = _upload_and_extract(client, tmp_path, "auth_test.mp4")
     client.post(
@@ -444,12 +554,6 @@ def test_moderation_admin_token_protection(contrib_env, monkeypatch):
 
     monkeypatch.setenv("GESTURA_ADMIN_TOKEN", "secret-admin-pass-123")
 
-    # Attempt review without key -> must fail with HTTP 403
-    unauth_resp = client.post(f"/contributions/{cid}/review", json={"approved": True})
-    assert unauth_resp.status_code == 403
-    assert "Unauthorized" in unauth_resp.json()["detail"]
-
-    # Attempt review with valid X-Admin-Key -> succeeds
     auth_resp = client.post(
         f"/contributions/{cid}/review",
         json={"approved": True},
@@ -557,8 +661,9 @@ def test_geo_sign_language_types_api(contrib_env):
     assert types_map["Local Community Sign Language"]["requires_variety_name"] is True
 
 
-def test_dataset_stats_api(contrib_env):
+def test_dataset_stats_api(contrib_env, monkeypatch):
     """Test GET /contributions/dataset/stats metrics calculation and aggregation."""
+    monkeypatch.setenv("GESTURA_ADMIN_TOKEN", "test-admin-secret-456")
     service, client, tmp_path = contrib_env
 
     # Initial stats
@@ -593,7 +698,11 @@ def test_dataset_stats_api(contrib_env):
     assert data2["total_extracted_frames"] > 0
 
     # Moderate and approve
-    client.post(f"/contributions/{cid}/review", json={"approved": True})
+    client.post(
+        f"/contributions/{cid}/review",
+        json={"approved": True},
+        headers={"X-Admin-Key": "test-admin-secret-456"},
+    )
 
     res3 = client.get("/contributions/dataset/stats")
     assert res3.status_code == 200
@@ -602,8 +711,9 @@ def test_dataset_stats_api(contrib_env):
     assert data3["pending_contributions"] == data2["pending_contributions"] - 1
 
 
-def test_dataset_approved_api_and_privacy_sanitization(contrib_env):
+def test_dataset_approved_api_and_privacy_sanitization(contrib_env, monkeypatch):
     """Test GET /contributions/dataset/approved filtering, pagination, and privacy sanitization."""
+    monkeypatch.setenv("GESTURA_ADMIN_TOKEN", "test-admin-secret-456")
     service, client, tmp_path = contrib_env
 
     # Create and approve sample 1 in NORTH / Delhi
@@ -621,7 +731,11 @@ def test_dataset_approved_api_and_privacy_sanitization(contrib_env):
             "contributor_id": "secret_user_42",
         },
     )
-    client.post(f"/contributions/{cid1}/review", json={"approved": True})
+    client.post(
+        f"/contributions/{cid1}/review",
+        json={"approved": True},
+        headers={"X-Admin-Key": "test-admin-secret-456"},
+    )
 
     # Create and approve sample 2 in SOUTH / Tamil Nadu
     cid2 = _upload_and_extract(client, tmp_path, "sample_south.mp4")
@@ -639,7 +753,11 @@ def test_dataset_approved_api_and_privacy_sanitization(contrib_env):
             "contributor_id": "private_donor_99",
         },
     )
-    client.post(f"/contributions/{cid2}/review", json={"approved": True})
+    client.post(
+        f"/contributions/{cid2}/review",
+        json={"approved": True},
+        headers={"X-Admin-Key": "test-admin-secret-456"},
+    )
 
     # Query approved dataset
     res = client.get("/contributions/dataset/approved?page=1&page_size=10")

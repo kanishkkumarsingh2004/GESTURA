@@ -15,7 +15,7 @@ from uuid import uuid4
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
 
 from model.inference import InferenceEngine, PredictionResult
@@ -35,6 +35,7 @@ from server.api_models import (
 )
 from server.audio_service import GESTURE_TEXT, AudioService
 from server.camera_server import CameraServer
+from server.auth import verify_admin_key
 from server.contribution_models import (
     ApprovedDatasetResponse,
     ContributionListResponse,
@@ -646,12 +647,13 @@ class GestureAPI:
             "/contributions",
             response_model=ContributionListResponse,
             tags=["Contributions - Moderation"],
-            summary="List contributions with optional filters",
-            description="Lists contributions across pending, approved, and rejected datasets with optional status and region filters.",
+            summary="List contributions with optional filters (Admin only)",
+            description="Lists contributions across pending, approved, and rejected datasets with optional status and region filters. Requires administrative authentication via X-Admin-Key.",
         )
         def list_contributions(
             status: Optional[str] = Query(None, description="Filter by status (pending, approved, rejected)"),
             region: Optional[str] = Query(None, description="Filter by region (NORTH, SOUTH, etc.)"),
+            _admin_key: str = Depends(verify_admin_key),
         ) -> ContributionListResponse:
             items = self.contribution_service.list_contributions(
                 status_filter=status, region_filter=region
@@ -665,20 +667,13 @@ class GestureAPI:
             response_model=ContributionMetadata,
             tags=["Contributions - Moderation"],
             summary="Review and approve/reject contribution (Admin only)",
-            description="Approves or rejects a submitted contribution. Requires X-Admin-Key header when GESTURA_ADMIN_TOKEN is configured in the environment.",
+            description="Approves or rejects a submitted contribution. Requires administrative authentication via X-Admin-Key.",
         )
         def review_contribution(
             contribution_id: str,
             payload: ReviewContributionRequest,
-            x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+            _admin_key: str = Depends(verify_admin_key),
         ) -> ContributionMetadata:
-            import os
-            required_token = os.getenv("GESTURA_ADMIN_TOKEN")
-            if required_token and x_admin_key != required_token:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Unauthorized: Admin authentication required for moderation review",
-                )
             return self.contribution_service.review_contribution(
                 contribution_id=contribution_id,
                 approved=payload.approved,

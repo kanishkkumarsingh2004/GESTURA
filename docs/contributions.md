@@ -146,3 +146,29 @@ The frontend is available at `/contribute` and adheres strictly to GESTURA's vis
 - **Sign Language Variety Selector**: Indian Sign Language (ISL), Regional ISL Variant, Local Community Sign Language, Other, Unsure.
 - **Conditional Variety Input**: Dynamically displays variety/community name field when required.
 - **Browse Tab**: Enables filtering community samples by Region and Status with full geographic tags.
+
+---
+
+## 9. Security, Authentication & Moderation Authorization
+
+GESTURA enforces role-separated access boundaries to protect community contributor privacy and dataset integrity:
+
+### 9.1 Public vs. Administrative Boundaries
+
+| Category | Routes | Access Model | Data Sanitization |
+| :--- | :--- | :--- | :--- |
+| **Public Ingestion** | `/contributions/upload`, `/contributions/{id}/*` | Open / Contributor | Direct contributor workflow |
+| **Public Dataset** | `/contributions/dataset/approved`, `/contributions/dataset/stats`, `/contributions/geo/*` | Open / Unauthenticated | Statically sanitized: strips `contributor_id`, raw video URLs, and server filesystem paths |
+| **Administrative Moderation** | `GET /contributions`, `POST /contributions/{id}/review` | Admin Only (`X-Admin-Key`) | Full access to review queues, rejected entries, and unapproved samples |
+
+### 9.2 Configuration & Constant-Time Verification
+
+- **Environment Variable**: `GESTURA_ADMIN_TOKEN` must be set in the server environment.
+- **Fail-Closed Guarantee**: If `GESTURA_ADMIN_TOKEN` is unset, empty, or contains only whitespace, all moderation endpoints immediately return `HTTP 503 Service Unavailable`. The system never defaults to open access.
+- **Timing-Attack Resistance**: The `X-Admin-Key` header is verified against the configured token using `hmac.compare_digest` in constant time.
+- **Status Codes**:
+  - `503 Service Unavailable`: Server admin authentication is not configured (`GESTURA_ADMIN_TOKEN` is unset or empty).
+  - `401 Unauthorized`: Request is missing the `X-Admin-Key` header.
+  - `403 Forbidden`: Supplied `X-Admin-Key` does not match the configured secret.
+  - `200 OK`: Successful moderation action or full contribution queue listing.
+
