@@ -630,25 +630,37 @@ export async function submitContribution(
 
 export async function listContributions(
   status?: string,
-  region?: string
+  region?: string,
+  adminKey?: string
 ): Promise<ContributionListResponse> {
   const params = new URLSearchParams();
   if (status && status !== "all") params.append("status", status);
   if (region && region !== "all") params.append("region", region);
   const query = params.toString() ? `?${params.toString()}` : "";
-  return request<ContributionListResponse>(`/contributions${query}`);
+  const headers: Record<string, string> = {};
+  if (adminKey) {
+    headers["X-Admin-Key"] = adminKey;
+  }
+  return request<ContributionListResponse>(`/contributions${query}`, {
+    headers,
+  });
 }
 
 export async function reviewContribution(
   contributionId: string,
   approved: boolean,
-  rejectionReason?: string
+  rejectionReason?: string,
+  adminKey?: string
 ): Promise<ContributionMetadata> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (adminKey) {
+    headers["X-Admin-Key"] = adminKey;
+  }
   return request<ContributionMetadata>(
     `/contributions/${contributionId}/review`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({
         approved,
         rejection_reason: rejectionReason,

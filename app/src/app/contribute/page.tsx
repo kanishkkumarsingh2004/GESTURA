@@ -18,6 +18,7 @@ import {
   reviewContribution,
   getFrameImageUrl,
   getDatasetStats,
+  getApprovedDataset,
   type ContributionMetadata,
   type FrameMetadata,
   type QualityReport,
@@ -121,6 +122,8 @@ export default function ContributePage() {
   const [browseRegionFilter, setBrowseRegionFilter] = useState<string>("all");
   const [activeReviewItem, setActiveReviewItem] = useState<ContributionMetadata | null>(null);
   const [isModerating, setIsModerating] = useState(false);
+  const [adminKey, setAdminKey] = useState<string>("");
+  const [isAdminMode, setIsAdminMode] = useState<boolean>(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -147,19 +150,46 @@ export default function ContributePage() {
     if (activeTab === "browse") {
       fetchSubmissions();
     }
-  }, [activeTab, statusFilter, browseRegionFilter]);
+  }, [activeTab, statusFilter, browseRegionFilter, adminKey, isAdminMode]);
 
   const fetchSubmissions = async () => {
     setIsLoadingSubmissions(true);
     try {
       getDatasetStats().then(setDatasetStats).catch(() => {});
-      const res = await listContributions(
-        statusFilter === "all" ? undefined : statusFilter,
-        browseRegionFilter === "all" ? undefined : browseRegionFilter
-      );
-      setCommunitySubmissions(res.contributions || []);
+      if (isAdminMode && adminKey.trim()) {
+        const res = await listContributions(
+          statusFilter === "all" ? undefined : statusFilter,
+          browseRegionFilter === "all" ? undefined : browseRegionFilter,
+          adminKey.trim()
+        );
+        setCommunitySubmissions(res.contributions || []);
+      } else {
+        // Public sanitized browsing via GET /contributions/dataset/approved
+        const res = await getApprovedDataset({
+          region: browseRegionFilter === "all" ? undefined : browseRegionFilter,
+        });
+        const mapped: ContributionSummary[] = res.items.map((item) => ({
+          contribution_id: item.contribution_id,
+          country: item.country,
+          region: item.region,
+          state: item.state,
+          district_city: item.district_city,
+          sign_language_type: item.sign_language_type,
+          variety_name: item.variety_name,
+          gesture_name: item.gesture_name,
+          meaning: item.meaning,
+          category: item.category,
+          gesture_type: item.gesture_type,
+          video_duration_seconds: item.video_duration_seconds,
+          usable_frame_count: item.usable_frame_count,
+          status: "approved",
+          created_at: item.created_at,
+        }));
+        setCommunitySubmissions(mapped);
+      }
     } catch (err: any) {
       console.error("Failed to load community submissions:", err);
+      setCommunitySubmissions([]);
     } finally {
       setIsLoadingSubmissions(false);
     }
@@ -388,9 +418,13 @@ export default function ContributePage() {
 
   // Moderation action
   const handleModerate = async (cid: string, approve: boolean, reason?: string) => {
+    if (!adminKey.trim()) {
+      alert("Administrator key required. Please enter your X-Admin-Key in the Moderation header.");
+      return;
+    }
     setIsModerating(true);
     try {
-      await reviewContribution(cid, approve, reason);
+      await reviewContribution(cid, approve, reason, adminKey.trim());
       await fetchSubmissions();
       if (activeReviewItem?.contribution_id === cid) {
         const refreshed = await getContribution(cid);
@@ -1200,30 +1234,72 @@ export default function ContributePage() {
                   </select>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-text-secondary font-medium">Status:</span>
-                  <div className="flex items-center gap-1">
-                    {["all", "pending_approval", "approved", "rejected"].map((st) => (
-                      <button
-                        key={st}
-                        onClick={() => setStatusFilter(st)}
-                        className={`px-2.5 py-1 rounded-md text-[11px] font-mono transition-colors ${
-                          statusFilter === st
-                            ? "bg-yellow-accent text-black font-semibold"
-                            : "bg-surface-elevated text-text-secondary hover:text-text-primary"
-                        }`}
-                      >
-                        {st.replace("_", " ").toUpperCase()}
-                      </button>
-                    ))}
+                {isAdminMode ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-text-secondary font-medium">Status:</span>
+                    <div className="flex items-center gap-1">
+                      {["all", "pending_approval", "approved", "rejected"].map((st) => (
+                        <button
+                          key={st}
+                          onClick={() => setStatusFilter(st)}
+                          className={`px-2.5 py-1 rounded-md text-[11px] font-mono transition-colors ${
+                            statusFilter === st
+                              ? "bg-yellow-accent text-black font-semibold"
+                              : "bg-surface-elevated text-text-secondary hover:text-text-primary"
+                          }`}
+                        >
+                          {st.replace("_", " ").toUpperCase()}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <div className="flex items-center gap-1">
+                    <span className="px-2.5 py-1 rounded-md text-[11px] font-mono bg-status-success/20 text-status-success font-semibold border border-status-success/30">
+                      PUBLIC DATASET (APPROVED ONLY)
+                    </span>
+                  </div>
+                )}
               </div>
 
-              <Button variant="ghost" size="sm" onClick={fetchSubmissions}>
-                <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
-                Refresh
-              </Button>
+              {/* Admin Key & Mode Controls */}
+              <div className="flex items-center gap-2 flex-wrap">
+                {isAdminMode ? (
+                  <div className="flex items-center gap-1.5 bg-surface-elevated px-2 py-1 rounded-md border border-yellow-accent/40">
+                    <ShieldCheck className="w-3.5 h-3.5 text-yellow-accent" />
+                    <input
+                      type="password"
+                      placeholder="Enter X-Admin-Key"
+                      value={adminKey}
+                      onChange={(e) => setAdminKey(e.target.value)}
+                      className="bg-transparent text-xs text-text-primary font-mono focus:outline-none w-32 placeholder:text-text-muted"
+                    />
+                    <button
+                      onClick={() => {
+                        setIsAdminMode(false);
+                        setAdminKey("");
+                      }}
+                      className="text-[10px] text-text-muted hover:text-text-primary underline ml-1"
+                    >
+                      Exit Admin
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setIsAdminMode(true)}
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-mono bg-surface-elevated text-text-secondary hover:text-yellow-accent border border-surface-border transition-colors"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    Admin Moderation
+                  </button>
+                )}
+
+                <Button variant="ghost" size="sm" onClick={fetchSubmissions}>
+                  <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
+                  Refresh
+                </Button>
+              </div>
+            </div>
             </div>
 
             {isLoadingSubmissions ? (
