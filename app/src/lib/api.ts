@@ -1,11 +1,40 @@
 /**
  * API client for the Gesture Recognition FastAPI backend.
  *
- * All requests go through the Next.js rewrite /api/:path* -> backend.
- * Configure NEXT_PUBLIC_API_URL to point at a remote FastAPI instance.
+ * All requests route through the Next.js rewrite (/api/:path* -> backend)
+ * to avoid browser CORS restrictions, with the backend URL configured
+ * strictly from environment variables.
  */
 
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "/api";
+/**
+ * Backend URL configured strictly from environment variables.
+ * In Next.js, this is resolved from BACK_END_url, NEXT_PUBLIC_BACKEND_URL,
+ * NEXT_PUBLIC_API_URL, or BACKEND_URL.
+ */
+export const BACKEND_URL = (
+  process.env.BACK_END_url ||
+  process.env.NEXT_PUBLIC_BACKEND_URL ||
+  process.env.NEXT_PUBLIC_API_URL ||
+  process.env.BACKEND_URL ||
+  ""
+).replace(/\/+$/, "");
+
+/**
+ * Resolves the base URL for API requests.
+ * In browser environments, requests default to '/api' (proxied by Next.js to BACKEND_URL)
+ * to avoid CORS errors. On server-side execution (Node.js), requests use BACKEND_URL directly.
+ */
+export function getBaseUrl(): string {
+  if (process.env.NEXT_PUBLIC_DIRECT_API === "true" && BACKEND_URL) {
+    return BACKEND_URL;
+  }
+  if (typeof window === "undefined" && BACKEND_URL) {
+    return BACKEND_URL;
+  }
+  return "/api";
+}
+
+const BASE_URL = getBaseUrl();
 
 const HEADERS: Record<string, string> = {
   Accept: "application/json",
@@ -15,11 +44,27 @@ async function request<T>(
   input: string,
   init?: RequestInit
 ): Promise<T> {
-  const res = await fetch(`${BASE_URL}${input}`, {
-    headers: { ...HEADERS, ...(init?.headers || {}) },
-    ...init,
-  });
+  const url = `${BASE_URL}${input}`;
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      headers: { ...HEADERS, ...(init?.headers || {}) },
+      ...init,
+    });
+  } catch (err) {
+    if (!BACKEND_URL) {
+      throw new Error(
+        "Backend URL is not configured. Please set BACK_END_url in your .env file."
+      );
+    }
+    throw err;
+  }
   if (!res.ok) {
+    if (res.status === 404 && !BACKEND_URL) {
+      throw new Error(
+        "Backend URL is not configured. Please set BACK_END_url in your .env file."
+      );
+    }
     let detail = "";
     try {
       const body = (await res.json()) as { detail?: string };
@@ -175,15 +220,30 @@ export async function predictImage({
     formData.append("session_id", sessionId);
   }
 
-  const res = await fetch(`${BASE_URL}/predict`, {
-    method: "POST",
-    body: formData,
-    headers: {
-      // Do not set Content-Type; the browser sets multipart boundary automatically.
-      ...(sessionId ? { "X-Session-Id": sessionId } : {}),
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}/predict`, {
+      method: "POST",
+      body: formData,
+      headers: {
+        // Do not set Content-Type; the browser sets multipart boundary automatically.
+        ...(sessionId ? { "X-Session-Id": sessionId } : {}),
+      },
+    });
+  } catch (err) {
+    if (!BACKEND_URL) {
+      throw new Error(
+        "Backend URL is not configured. Please set BACK_END_url in your .env file."
+      );
+    }
+    throw err;
+  }
   if (!res.ok) {
+    if (res.status === 404 && !BACKEND_URL) {
+      throw new Error(
+        "Backend URL is not configured. Please set BACK_END_url in your .env file."
+      );
+    }
     let detail = "";
     try {
       const body = (await res.json()) as { detail?: string };

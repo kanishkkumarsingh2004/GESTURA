@@ -1,0 +1,158 @@
+export interface GestureItem {
+  id: string;
+  name: string;
+  text: string;
+  category: "Greetings" | "Responses" | "Commands" | "Politeness" | "Emergency" | "Expressions" | "Numbers & Signs";
+  description: string;
+  handPosture: string;
+  sampleSvg?: string;
+  isVocabularyCore: boolean;
+}
+
+export const GESTURE_CATALOG: GestureItem[] = [
+  {
+    id: "HELLO",
+    name: "HELLO",
+    text: "Hello",
+    category: "Greetings",
+    description: "Standard open-palm greeting gesture welcoming the conversation partner.",
+    handPosture: "Open palm facing forward at shoulder height, fingers extended upward.",
+    isVocabularyCore: true,
+  },
+  {
+    id: "THANK_YOU",
+    name: "THANK_YOU",
+    text: "Thank you",
+    category: "Politeness",
+    description: "Expression of appreciation and gratitude toward the observer.",
+    handPosture: "Fingertips touch near chin/mouth and move gently outward toward listener.",
+    isVocabularyCore: true,
+  },
+  {
+    id: "YES",
+    name: "YES",
+    text: "Yes",
+    category: "Responses",
+    description: "Affirmative agreement or consent.",
+    handPosture: "Closed fist held upright with a forward tilting nod gesture.",
+    isVocabularyCore: true,
+  },
+  {
+    id: "NO",
+    name: "NO",
+    text: "No",
+    category: "Responses",
+    description: "Negative response, disagreement, or decline.",
+    handPosture: "Index and middle fingers tap thumb rapidly, or index finger oscillates side to side.",
+    isVocabularyCore: true,
+  },
+  {
+    id: "PLEASE",
+    name: "PLEASE",
+    text: "Please",
+    category: "Politeness",
+    description: "Courteous request or petition.",
+    handPosture: "Flat palm placed on chest, moving in a gentle clockwise circular path.",
+    isVocabularyCore: true,
+  },
+  {
+    id: "STOP",
+    name: "STOP",
+    text: "Stop",
+    category: "Commands",
+    description: "Urgent pause, halting action, or boundary indicator.",
+    handPosture: "Hand raised with palm facing outward directly toward camera, fingers extended.",
+    isVocabularyCore: true,
+  },
+  {
+    id: "HELP",
+    name: "HELP",
+    text: "Help",
+    category: "Emergency",
+    description: "Urgent request for assistance or medical support.",
+    handPosture: "Closed fist with thumb upright resting on the open palm of the other hand.",
+    isVocabularyCore: true,
+  },
+  {
+    id: "GOOD",
+    name: "GOOD",
+    text: "Good",
+    category: "Expressions",
+    description: "Positive affirmation, approval, or excellence.",
+    handPosture: "Thumb extended vertically upward from a closed fist.",
+    isVocabularyCore: true,
+  },
+  {
+    id: "BAD",
+    name: "BAD",
+    text: "Bad",
+    category: "Expressions",
+    description: "Negative evaluation or dissatisfaction.",
+    handPosture: "Thumb extended vertically downward from a closed fist.",
+    isVocabularyCore: true,
+  },
+  {
+    id: "LOVE",
+    name: "LOVE",
+    text: "Love",
+    category: "Expressions",
+    description: "Universal sign of affection, care, and compassion.",
+    handPosture: "Thumb, index finger, and pinky extended simultaneously while middle and ring fingers fold.",
+    isVocabularyCore: true,
+  },
+  {
+    id: "OK",
+    name: "OK",
+    text: "All good / OK",
+    category: "Responses",
+    description: "Confirmation of readiness or understanding.",
+    handPosture: "Thumb and index finger form a circle; remaining three fingers extended.",
+    isVocabularyCore: false,
+  },
+  {
+    id: "TWO",
+    name: "TWO / PEACE",
+    text: "Two / Peace",
+    category: "Numbers & Signs",
+    description: "Numerical value 2 or victory/peace symbol.",
+    handPosture: "Index and middle fingers extended upward in a V formation.",
+    isVocabularyCore: false,
+  },
+  {
+    id: "THREE",
+    name: "THREE",
+    text: "Three",
+    category: "Numbers & Signs",
+    description: "Numerical value 3.",
+    handPosture: "Thumb, index, and middle fingers extended; ring and pinky folded.",
+    isVocabularyCore: false,
+  },
+  {
+    id: "FOUR",
+    name: "FOUR",
+    text: "Four",
+    category: "Numbers & Signs",
+    description: "Numerical value 4.",
+    handPosture: "Four fingers extended upward vertically, thumb folded across palm.",
+    isVocabularyCore: false,
+  },
+  {
+    id: "FIVE",
+    name: "FIVE",
+    text: "Five / Full Hand",
+    category: "Numbers & Signs",
+    description: "Numerical value 5 with all fingers spread.",
+    handPosture: "All five fingers fully spread and extended.",
+    isVocabularyCore: false,
+  },
+  {
+    id: "NONE",
+    name: "NONE",
+    text: "Neutral / No gesture",
+    category: "Responses",
+    description: "Background ambient hand movement or unsupported gesture.",
+    handPosture: "Hand at rest, partially occluded, or outside defined bounding areas.",
+    isVocabularyCore: true,
+  },
+];
+

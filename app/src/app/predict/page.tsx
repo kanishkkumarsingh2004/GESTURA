@@ -1,26 +1,31 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { Image as LucideImage, X, Loader2 } from "lucide-react";
+import Link from "next/link";
+import { Navbar } from "@/components/navbar";
+import { Footer } from "@/components/footer";
 import { Card } from "@/components/card";
 import { Button } from "@/components/button";
 import { Badge } from "@/components/badge";
-import { predictImage } from "@/lib/api";
-
-type PredictionResult = {
-  class_name: string;
-  confidence: number;
-  probabilities: Record<string, number>;
-  inference_time_ms: number;
-  stable: boolean;
-  session_id: string;
-};
+import { predictImage, type PredictResponse } from "@/lib/api";
+import { speech } from "@/lib/speech";
+import {
+  Image as LucideImage,
+  X,
+  UploadCloud,
+  Volume2,
+  Sparkles,
+  ArrowRight,
+  AlertCircle,
+  Clock,
+  Layers,
+} from "lucide-react";
 
 export default function PredictPage() {
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState("");
-  const [result, setResult] = useState<PredictionResult | null>(null);
+  const [result, setResult] = useState<PredictResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -59,19 +64,16 @@ export default function PredictPage() {
           file,
           sessionId: sessionId || undefined,
         });
-        setResult({
-          class_name: data.class_name,
-          confidence: data.confidence,
-          probabilities: data.probabilities,
-          inference_time_ms: data.inference_time_ms,
-          stable: data.stable,
-          session_id: data.session_id,
-        });
-        if (data.session_id && !sessionId) {
-          setSessionId(data.session_id);
+        setResult(data);
+        if (data.class_name && data.class_name !== "NONE") {
+          speech.speak(data.class_name.replace(/_/g, " "));
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Prediction failed");
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Classification failed. Ensure the FastAPI backend is online."
+        );
       } finally {
         setLoading(false);
       }
@@ -80,164 +82,191 @@ export default function PredictPage() {
   );
 
   return (
-    <div className="min-h-screen bg-navy text-white">
-      <nav className="sticky top-0 z-50 border-b border-slate-800 bg-navy/80 backdrop-blur-md">
-        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
-          <a href="/" className="flex items-center gap-2 text-slate-300 hover:text-white">
-            <span className="text-electric-blue">←</span>
-            <span className="font-medium">Back</span>
-          </a>
-          <span className="font-bold text-lg tracking-tight">Predict</span>
-        </div>
-      </nav>
+    <div className="min-h-screen bg-background text-text-primary flex flex-col">
+      <Navbar />
 
-      <main className="max-w-5xl mx-auto px-4 py-8 space-y-8">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {/* Upload area */}
-          <Card>
-            <div className="space-y-4">
-              <h2 className="text-lg font-semibold text-white">Upload Image</h2>
-              <p className="text-sm text-slate-400">
-                Upload a photo of a hand gesture. The model will classify it and
-                return confidence scores.
-              </p>
-              <form onSubmit={handleSubmit} className="space-y-4">
-                <label className="block">
-                  <span className="text-sm font-medium text-slate-300 mb-2 block">
-                    Session ID (optional)
-                  </span>
-                  <input
-                    type="text"
-                    value={sessionId}
-                    onChange={(e) => setSessionId(e.target.value)}
-                    placeholder="Auto-generated if left empty"
-                    className="w-full bg-navy border border-slate-700 rounded-lg px-3 py-2 text-white focus:ring-2 focus:ring-electric-blue outline-none transition-colors"
-                  />
-                </label>
-                <div
-                  onClick={() => document.getElementById("file-input")?.click()}
-                  className={`border-2 border-dashed rounded-xl p-8 text-center transition-colors ${
-                    file
-                      ? "border-electric-blue/50 bg-slate/50"
-                      : "border-slate-700 hover:border-slate-500"
-                  }`}
-                >
-                  {preview ? (
-                    <>
-                      <img src={preview} alt="Preview" className="mx-auto max-h-48 rounded-lg object-cover" />
-                      <button
-                        type="button"
-                        onClick={removeFile}
-                        className="mt-3 text-red-400 hover:text-red-300 text-sm"
-                      >
-                        <X className="w-4 h-4 inline mr-1" /> Remove
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <LucideImage className="w-12 h-12 mx-auto text-slate-500 mb-2" />
-                      <p className="text-sm text-slate-400 mb-1">Click to upload</p>
-                      <p className="text-xs text-slate-500">
-                        PNG, JPG, WEBP (max 10 MB)
-                      </p>
+      <main className="flex-1 max-w-5xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
+        {/* Banner with Studio Link */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-surface-border">
+          <div>
+            <h1 className="font-heading text-2xl sm:text-3xl font-bold tracking-tight text-white">
+              Single Image Classification Audit
+            </h1>
+            <p className="text-text-secondary text-xs sm:text-sm mt-1">
+              Upload an image frame to audit gesture recognition probabilities and inference latency.
+            </p>
+          </div>
+
+          <Link
+            href="/studio"
+            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-yellow-accent text-black font-semibold text-xs tracking-wide hover:bg-yellow-hover transition-all"
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>Launch Live Studio</span>
+          </Link>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-8">
+          {/* UPLOAD FORM (Col 6) */}
+          <div className="md:col-span-6 space-y-6">
+            <Card className="bg-surface-card border-surface-border">
+              <form onSubmit={handleSubmit} className="space-y-5">
+                <div className="space-y-2">
+                  <label className="block text-xs font-mono uppercase text-text-muted">
+                    GESTURE IMAGE FRAME
+                  </label>
+
+                  {!preview ? (
+                    <label className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-surface-border hover:border-yellow-accent/40 rounded-xl cursor-pointer bg-surface-secondary/50 transition-colors">
+                      <UploadCloud className="w-10 h-10 text-yellow-accent/80 mb-2" />
+                      <span className="text-sm font-medium text-white">Select image frame</span>
+                      <span className="text-xs text-text-muted mt-1">JPG, PNG, WebP up to 10 MB</span>
                       <input
-                        id="file-input"
                         type="file"
                         accept="image/*"
                         onChange={handleFileChange}
                         className="hidden"
                       />
-                    </>
+                    </label>
+                  ) : (
+                    <div className="relative rounded-xl overflow-hidden border border-surface-border aspect-video bg-black">
+                      <img
+                        src={preview}
+                        alt="Preview"
+                        className="w-full h-full object-contain"
+                      />
+                      <button
+                        type="button"
+                        onClick={removeFile}
+                        className="absolute top-2 right-2 p-1.5 rounded-full bg-black/80 hover:bg-status-error text-white transition-colors"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
                   )}
                 </div>
+
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-mono uppercase text-text-muted">
+                    OPTIONAL SESSION ID
+                  </label>
+                  <input
+                    type="text"
+                    value={sessionId}
+                    onChange={(e) => setSessionId(e.target.value)}
+                    placeholder="e.g. test_session_1"
+                    className="w-full px-3 py-2 rounded-lg bg-surface-elevated border border-surface-border text-white text-xs font-mono placeholder:text-text-muted focus:border-yellow-accent outline-none"
+                  />
+                </div>
+
                 <Button
                   type="submit"
-                  disabled={!file || loading}
-                  className="w-full"
+                  disabled={!file}
+                  isLoading={loading}
+                  variant="primary"
+                  className="w-full py-2.5"
                 >
-                  {loading ? (
-                    <>
-                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      Classifying...
-                    </>
-                  ) : (
-                    "Classify Gesture"
-                  )}
+                  <Sparkles className="w-4 h-4 mr-2" />
+                  Run Neural Classification
                 </Button>
               </form>
-            </div>
-          </Card>
+            </Card>
 
-          {/* Results */}
-          <Card>
-            <div className="space-y-4">
-              <h2 className="text-lg font-semibold text-white">Result</h2>
-              {error && (
-                <div className="p-3 rounded-lg bg-red-900/20 border border-red-500/30 text-red-400 text-sm">
-                  {error}
-                </div>
-              )}
-              {!result && !loading && (
-                <div className="h-32 flex items-center justify-center rounded-lg border border-dashed border-slate-700 text-slate-500 text-sm">
-                  Prediction will appear here
-                </div>
-              )}
-              {loading && (
-                <div className="h-32 flex flex-col items-center justify-center gap-2">
-                  <Loader2 className="w-8 h-8 animate-spin text-electric-blue" />
-                  <span className="text-slate-400 text-sm">Classifying...</span>
-                </div>
-              )}
-              {result && (
-                <div className="space-y-4 pt-2">
-                  <div className="flex items-center gap-3">
-                    <Badge variant="success">
-                      {result.stable ? "Stable" : "Unstable"}
+            {error && (
+              <div className="p-4 rounded-xl bg-status-error/10 border border-status-error/30 text-status-error text-xs flex items-start gap-3">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{error}</span>
+              </div>
+            )}
+          </div>
+
+          {/* PREDICTION RESULTS (Col 6) */}
+          <div className="md:col-span-6 space-y-6">
+            <Card className="bg-surface-card border-surface-border h-full flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between pb-3 mb-4 border-b border-surface-border text-xs">
+                  <span className="font-mono text-text-muted uppercase">AUDIT RESULT</span>
+                  {result && (
+                    <Badge variant="yellow" size="sm">
+                      CONFIRMED
                     </Badge>
-                    <span className="text-xs text-slate-500">
-                      Session: {result.session_id.slice(0, 8)}…
-                    </span>
-                  </div>
-                  <div className="text-3xl font-bold text-white">
-                    {result.class_name}
-                  </div>
-                  <div className="text-lg text-electric-blue">
-                    {Math.round(result.confidence * 100)}% confidence
-                  </div>
-                  <div className="text-xs text-slate-500 font-mono">
-                    {result.inference_time_ms.toFixed(1)} ms inference
-                  </div>
-                  <div className="mt-4 border-t border-slate-700 pt-4">
-                    <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">
-                      Class Probabilities
-                    </h3>
-                    <div className="space-y-2">
-                      {Object.entries(result.probabilities).map(
-                        ([name, prob]) => (
-                          <div key={name} className="flex items-center gap-3">
-                            <span className="text-sm text-slate-300 w-20">
-                              {name}
-                            </span>
-                            <div className="flex-1 h-2 bg-slate-700 rounded-full overflow-hidden">
-                              <div
-                                className="h-full bg-electric-blue"
-                                style={{ width: `${prob * 100}%` }}
-                              ></div>
-                            </div>
-                            <span className="text-xs font-mono text-slate-400 w-12 text-right">
-                              {(prob * 100).toFixed(1)}%
-                            </span>
-                          </div>
-                        )
-                      )}
-                    </div>
-                  </div>
+                  )}
                 </div>
-              )}
-            </div>
-          </Card>
+
+                {!result ? (
+                  <div className="py-16 text-center text-text-muted text-xs">
+                    Upload an image and run classification to view predicted class, confidence, and
+                    full probability distribution.
+                  </div>
+                ) : (
+                  <div className="space-y-6">
+                    {/* Big recognized gesture */}
+                    <div className="text-center p-6 rounded-xl bg-surface-secondary border border-surface-border">
+                      <div className="text-[10px] font-mono text-text-muted uppercase tracking-widest mb-1">
+                        PREDICTED CLASS
+                      </div>
+                      <div className="font-heading text-4xl font-bold text-yellow-accent tracking-wide uppercase">
+                        {result.class_name}
+                      </div>
+
+                      <div className="mt-4 flex items-center justify-center gap-6 text-xs font-mono text-text-secondary">
+                        <div>
+                          CONFIDENCE:{" "}
+                          <span className="text-white font-bold">
+                            {(result.confidence * 100).toFixed(1)}%
+                          </span>
+                        </div>
+                        <div>
+                          LATENCY:{" "}
+                          <span className="text-white font-bold">
+                            {result.inference_time_ms.toFixed(1)} ms
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Top probabilities */}
+                    {result.probabilities && (
+                      <div className="space-y-3">
+                        <div className="text-xs font-mono text-text-muted uppercase">
+                          TOP CLASS PROBABILITIES
+                        </div>
+                        <div className="space-y-2">
+                          {Object.entries(result.probabilities)
+                            .sort(([, a], [, b]) => b - a)
+                            .slice(0, 5)
+                            .map(([cls, prob]) => (
+                              <div key={cls} className="space-y-1">
+                                <div className="flex justify-between text-xs font-mono">
+                                  <span className="text-text-primary">{cls}</span>
+                                  <span className="text-text-secondary">
+                                    {(prob * 100).toFixed(1)}%
+                                  </span>
+                                </div>
+                                <div className="h-1.5 w-full rounded-full bg-surface-elevated overflow-hidden">
+                                  <div
+                                    className={`h-full rounded-full ${
+                                      cls === result.class_name
+                                        ? "bg-yellow-accent"
+                                        : "bg-surface-border"
+                                    }`}
+                                    style={{ width: `${Math.min(100, prob * 100)}%` }}
+                                  />
+                                </div>
+                              </div>
+                            ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </Card>
+          </div>
         </div>
       </main>
+
+      <Footer />
     </div>
   );
 }

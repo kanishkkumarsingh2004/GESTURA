@@ -1,26 +1,31 @@
-"use client";
-
-import { HTMLAttributes } from "react";
+import { HTMLAttributes, ReactNode } from "react";
 
 interface CardProps extends HTMLAttributes<HTMLDivElement> {
-  padding?: "none" | "sm" | "md" | "lg";
+  children: ReactNode;
+  className?: string;
+  elevated?: boolean;
+  hoverEffect?: boolean;
 }
 
 export function Card({
   children,
   className = "",
-  padding = "md",
+  elevated = false,
+  hoverEffect = false,
+  ...props
 }: CardProps) {
-  const pad = {
-    none: "",
-    sm: "p-4",
-    md: "p-6",
-    lg: "p-8",
-  }[padding];
-
   return (
     <div
-      className={`bg-slate border border-slate-700 rounded-xl ${pad} ${className}`}
+      className={`rounded-xl border ${
+        elevated
+          ? "bg-surface-elevated border-surface-border"
+          : "bg-surface-card border-surface-border"
+      } ${
+        hoverEffect
+          ? "transition-all duration-200 hover:border-yellow-accent/40 hover:shadow-lg hover:shadow-black/40"
+          : ""
+      } p-6 ${className}`}
+      {...props}
     >
       {children}
     </div>
