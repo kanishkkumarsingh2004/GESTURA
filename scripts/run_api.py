@@ -3,6 +3,7 @@
 Usage:
     uv run --active python scripts/run_api.py
     uv run --active python scripts/run_api.py --host 0.0.0.0 --port 8000
+    uv run uvicorn server.api:app --host 0.0.0.0 --port 8000
 
 Endpoints:
     GET    /health
@@ -15,6 +16,14 @@ Endpoints:
 from __future__ import annotations
 
 import argparse
+import sys
+from pathlib import Path
+
+# Ensure the project root (parent of this scripts/ directory) is on sys.path so
+# `import server` works whether this file is run as a script or as a module.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import uvicorn
 

@@ -26,6 +26,7 @@ data/uploads/
 .streamlit/secrets.toml
 
 node_modules/
+.next/
 .coverage
 .pytest_cache/
 .mypy_cache/
