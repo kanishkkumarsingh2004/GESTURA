@@ -149,3 +149,62 @@ class ContributionSummary(BaseModel):
 class ContributionListResponse(BaseModel):
     count: int
     contributions: List[ContributionSummary]
+
+
+class GeoRegionsResponse(BaseModel):
+    country: str = "India"
+    regions: List[str]
+    count: int
+
+
+class GeoStatesResponse(BaseModel):
+    region: str
+    states: List[str]
+    count: int
+
+
+class SignLanguageTypeItem(BaseModel):
+    name: str
+    requires_variety_name: bool
+    description: str
+
+
+class SignLanguageTypesResponse(BaseModel):
+    types: List[SignLanguageTypeItem]
+    count: int
+
+
+class DatasetStatsResponse(BaseModel):
+    total_contributions: int
+    pending_contributions: int
+    approved_contributions: int
+    rejected_contributions: int
+    by_region: dict[str, int]
+    by_state: dict[str, int]
+    by_sign_language_type: dict[str, int]
+    total_extracted_frames: int
+
+
+class PublicApprovedContribution(BaseModel):
+    contribution_id: str
+    gesture_name: str
+    meaning: str
+    category: str
+    gesture_type: str = "dynamic"
+    country: str = "India"
+    region: str
+    state: str
+    district_city: Optional[str] = None
+    sign_language_type: str
+    variety_name: Optional[str] = None
+    video_duration_seconds: float
+    usable_frame_count: int
+    created_at: float
+
+
+class ApprovedDatasetResponse(BaseModel):
+    items: List[PublicApprovedContribution]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int

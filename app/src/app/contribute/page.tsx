@@ -17,10 +17,12 @@ import {
   listContributions,
   reviewContribution,
   getFrameImageUrl,
+  getDatasetStats,
   type ContributionMetadata,
   type FrameMetadata,
   type QualityReport,
   type ContributionSummary,
+  type DatasetStatsResponse,
 } from "@/lib/api";
 import {
   COUNTRY_NAME,
@@ -113,6 +115,7 @@ export default function ContributePage() {
 
   // Browse submissions state
   const [communitySubmissions, setCommunitySubmissions] = useState<ContributionSummary[]>([]);
+  const [datasetStats, setDatasetStats] = useState<DatasetStatsResponse | null>(null);
   const [isLoadingSubmissions, setIsLoadingSubmissions] = useState(false);
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [browseRegionFilter, setBrowseRegionFilter] = useState<string>("all");
@@ -149,6 +152,7 @@ export default function ContributePage() {
   const fetchSubmissions = async () => {
     setIsLoadingSubmissions(true);
     try {
+      getDatasetStats().then(setDatasetStats).catch(() => {});
       const res = await listContributions(
         statusFilter === "all" ? undefined : statusFilter,
         browseRegionFilter === "all" ? undefined : browseRegionFilter
@@ -1147,6 +1151,36 @@ export default function ContributePage() {
         {/* ========================================================================= */}
         {activeTab === "browse" && (
           <div className="space-y-6">
+            {/* Live Dataset Aggregation Metrics */}
+            {datasetStats && (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <Card elevated className="p-3 bg-surface-card border-surface-border">
+                  <div className="text-[11px] font-mono text-text-muted">TOTAL SAMPLES</div>
+                  <div className="text-xl font-bold font-heading text-text-primary mt-0.5">
+                    {datasetStats.total_contributions}
+                  </div>
+                </Card>
+                <Card elevated className="p-3 bg-surface-card border-surface-border">
+                  <div className="text-[11px] font-mono text-status-success">APPROVED FOR ML</div>
+                  <div className="text-xl font-bold font-heading text-status-success mt-0.5">
+                    {datasetStats.approved_contributions}
+                  </div>
+                </Card>
+                <Card elevated className="p-3 bg-surface-card border-surface-border">
+                  <div className="text-[11px] font-mono text-yellow-accent">PENDING REVIEW</div>
+                  <div className="text-xl font-bold font-heading text-yellow-accent mt-0.5">
+                    {datasetStats.pending_contributions}
+                  </div>
+                </Card>
+                <Card elevated className="p-3 bg-surface-card border-surface-border">
+                  <div className="text-[11px] font-mono text-accent-cyan">EXTRACTED FRAMES</div>
+                  <div className="text-xl font-bold font-heading text-accent-cyan mt-0.5">
+                    {datasetStats.total_extracted_frames}
+                  </div>
+                </Card>
+              </div>
+            )}
+
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-surface-card p-4 rounded-xl border border-surface-border">
               {/* Region and Status Filters */}
               <div className="flex flex-wrap items-center gap-3">

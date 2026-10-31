@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -16,15 +17,20 @@ import numpy as np
 from fastapi import HTTPException, UploadFile, status
 
 from server.contribution_models import (
+    ApprovedDatasetResponse,
     ContributionMetadata,
     ContributionSummary,
+    DatasetStatsResponse,
     ExtractFramesResponse,
     FrameMetadata,
+    PublicApprovedContribution,
     QualityReport,
     SubmitContributionRequest,
 )
 from server.india_geo_config import (
     COUNTRY_NAME,
+    INDIA_REGIONS,
+    SIGN_LANGUAGE_TYPES,
     to_slug,
     validate_india_geo,
     validate_sign_language_variety,
@@ -594,3 +600,177 @@ class ContributionService:
         status_str = "APPROVED" if approved else "REJECTED"
         logger.info("Contribution %s %s [Region: %s, State: %s]", cid, status_str, region, state)
         return ContributionMetadata(**meta)
+
+    # ------------------------------------------------------------------ Dataset Aggregations & Public API
+    def get_dataset_stats(self) -> DatasetStatsResponse:
+        """Calculate aggregate metrics across all contributions in the system."""
+        total = 0
+        pending = 0
+        approved = 0
+        rejected = 0
+        total_frames = 0
+
+        # Pre-seed regions and sign language types with 0 counts
+        by_region: dict[str, int] = {r: 0 for r in INDIA_REGIONS.keys()}
+        by_state: dict[str, int] = {}
+        by_sign_language_type: dict[str, int] = {t: 0 for t in SIGN_LANGUAGE_TYPES}
+
+        # Track processed contribution IDs to prevent duplicate counts
+        seen_cids: set[str] = set()
+
+        for state_dir in [self.pending_dir, self.approved_dir, self.rejected_dir]:
+            if not state_dir.is_dir():
+                continue
+            for meta_path in state_dir.rglob("metadata.json"):
+                try:
+                    with open(meta_path, "r", encoding="utf-8") as f:
+                        meta = json.load(f)
+                    cid = meta.get("contribution_id")
+                    if not cid or cid in seen_cids:
+                        continue
+                    seen_cids.add(cid)
+
+                    total += 1
+                    status_val = meta.get("status", "unknown")
+                    if status_val == "approved":
+                        approved += 1
+                    elif status_val == "rejected":
+                        rejected += 1
+                    else:
+                        pending += 1
+
+                    # Region breakdown
+                    region = meta.get("region")
+                    if region and region in by_region:
+                        by_region[region] += 1
+                    elif region:
+                        by_region[region] = by_region.get(region, 0) + 1
+
+                    # State breakdown
+                    state = meta.get("state")
+                    if state:
+                        by_state[state] = by_state.get(state, 0) + 1
+
+                    # Sign language classification breakdown
+                    sl_type = meta.get("sign_language_type")
+                    if sl_type and sl_type in by_sign_language_type:
+                        by_sign_language_type[sl_type] += 1
+                    elif sl_type:
+                        by_sign_language_type[sl_type] = by_sign_language_type.get(sl_type, 0) + 1
+
+                    # Frame count calculation
+                    frames = meta.get("usable_frame_count", 0)
+                    qr = meta.get("quality_report")
+                    if isinstance(qr, dict) and "total_frames_extracted" in qr:
+                        frames = qr.get("total_frames_extracted", frames)
+                    total_frames += frames
+                except Exception as err:
+                    logger.warning("Error reading metadata at %s for stats: %s", meta_path, err)
+
+        return DatasetStatsResponse(
+            total_contributions=total,
+            pending_contributions=pending,
+            approved_contributions=approved,
+            rejected_contributions=rejected,
+            by_region=by_region,
+            by_state=by_state,
+            by_sign_language_type=by_sign_language_type,
+            total_extracted_frames=total_frames,
+        )
+
+    def get_approved_contributions(
+        self,
+        page: int = 1,
+        page_size: int = 20,
+        region: Optional[str] = None,
+        state: Optional[str] = None,
+        sign_language_type: Optional[str] = None,
+        gesture_name: Optional[str] = None,
+    ) -> ApprovedDatasetResponse:
+        """Return paginated public metadata for approved contributions.
+
+        Sanitization guarantee:
+        Private contributor ID, raw video filename, and local disk paths
+        are completely stripped from the response.
+        """
+        if not self.approved_dir.is_dir():
+            return ApprovedDatasetResponse(
+                items=[], total=0, page=page, page_size=page_size, total_pages=1
+            )
+
+        items: list[PublicApprovedContribution] = []
+        seen_cids: set[str] = set()
+
+        for meta_path in self.approved_dir.rglob("metadata.json"):
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                cid = meta.get("contribution_id")
+                if not cid or cid in seen_cids:
+                    continue
+                seen_cids.add(cid)
+
+                if meta.get("status") != "approved":
+                    continue
+
+                # Apply optional filters
+                if region:
+                    meta_region = (meta.get("region") or "").strip().upper()
+                    if meta_region != region.strip().upper():
+                        continue
+
+                if state:
+                    meta_state = (meta.get("state") or "").strip().lower()
+                    if meta_state != state.strip().lower():
+                        continue
+
+                if sign_language_type:
+                    meta_slt = (meta.get("sign_language_type") or "").strip().lower()
+                    if meta_slt != sign_language_type.strip().lower():
+                        continue
+
+                if gesture_name:
+                    meta_gesture = (meta.get("gesture_name") or "").strip().lower()
+                    if gesture_name.strip().lower() not in meta_gesture:
+                        continue
+
+                items.append(
+                    PublicApprovedContribution(
+                        contribution_id=meta["contribution_id"],
+                        gesture_name=meta.get("gesture_name") or "UNKNOWN",
+                        meaning=meta.get("meaning") or "",
+                        category=meta.get("category") or "General",
+                        gesture_type=meta.get("gesture_type") or "dynamic",
+                        country=meta.get("country", COUNTRY_NAME),
+                        region=meta.get("region") or "UNKNOWN",
+                        state=meta.get("state") or "UNKNOWN",
+                        district_city=meta.get("district_city"),
+                        sign_language_type=meta.get("sign_language_type") or "Indian Sign Language (ISL)",
+                        variety_name=meta.get("variety_name"),
+                        video_duration_seconds=meta.get("video_duration_seconds", 0.0),
+                        usable_frame_count=meta.get("usable_frame_count", 0),
+                        created_at=meta.get("created_at", 0.0),
+                    )
+                )
+            except Exception as err:
+                logger.warning("Error reading approved metadata %s: %s", meta_path, err)
+
+        # Sort by creation time descending (newest first)
+        items.sort(key=lambda x: x.created_at, reverse=True)
+
+        total = len(items)
+        page = max(1, page)
+        page_size = max(1, min(100, page_size))
+        total_pages = max(1, math.ceil(total / page_size)) if total > 0 else 1
+
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        paged_items = items[start_idx:end_idx]
+
+        return ApprovedDatasetResponse(
+            items=paged_items,
+            total=total,
+            page=page,
+            page_size=page_size,
+            total_pages=total_pages,
+        )

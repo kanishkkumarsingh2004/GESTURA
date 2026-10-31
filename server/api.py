@@ -36,16 +36,28 @@ from server.api_models import (
 from server.audio_service import GESTURE_TEXT, AudioService
 from server.camera_server import CameraServer
 from server.contribution_models import (
+    ApprovedDatasetResponse,
     ContributionListResponse,
     ContributionMetadata,
     ContributionUploadResponse,
+    DatasetStatsResponse,
     ExtractFramesRequest,
     ExtractFramesResponse,
     FrameListResponse,
+    GeoRegionsResponse,
+    GeoStatesResponse,
+    PublicApprovedContribution,
     ReviewContributionRequest,
+    SignLanguageTypeItem,
+    SignLanguageTypesResponse,
     SubmitContributionRequest,
 )
 from server.contribution_service import ContributionService
+from server.india_geo_config import (
+    get_all_regions,
+    get_sign_language_type_details,
+    get_states_for_region,
+)
 from server.prediction_service import PredictionService, StablePredictionEvent
 from server.session_manager import SessionState
 from utils.logging import get_app_logger
@@ -417,11 +429,103 @@ class GestureAPI:
             self._remove_session(session_id)
             return {"session_id": session_id, "status": "removed"}
 
-        # ------------------------------------------------ contributions
+        # ------------------------------------------------ contributions - geography
+        @app.get(
+            "/contributions/geo/regions",
+            response_model=GeoRegionsResponse,
+            tags=["Contributions - Geography"],
+            summary="List configured Indian regions",
+            description="Returns all six configured Indian geographical regions for gesture contribution provenance.",
+        )
+        def get_geo_regions() -> GeoRegionsResponse:
+            regions = get_all_regions()
+            return GeoRegionsResponse(
+                country="India",
+                regions=regions,
+                count=len(regions),
+            )
+
+        @app.get(
+            "/contributions/geo/states",
+            response_model=GeoStatesResponse,
+            tags=["Contributions - Geography"],
+            summary="List states and UTs for an Indian region",
+            description="Returns all states and union territories belonging to the specified Indian geographical region.",
+        )
+        def get_geo_states(
+            region: str = Query(..., description="Indian region name (e.g. NORTH, SOUTH, EAST, WEST, CENTRAL, NORTHEAST)"),
+        ) -> GeoStatesResponse:
+            try:
+                states = get_states_for_region(region)
+                return GeoStatesResponse(
+                    region=region.strip().upper(),
+                    states=states,
+                    count=len(states),
+                )
+            except ValueError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(err),
+                )
+
+        @app.get(
+            "/contributions/geo/sign-language-types",
+            response_model=SignLanguageTypesResponse,
+            tags=["Contributions - Geography"],
+            summary="List supported sign language types and validation requirements",
+            description="Returns supported sign language classifications (ISL, Regional ISL Variant, etc.) and validation rules.",
+        )
+        def get_geo_sign_language_types() -> SignLanguageTypesResponse:
+            details = get_sign_language_type_details()
+            items = [SignLanguageTypeItem(**d) for d in details]
+            return SignLanguageTypesResponse(
+                types=items,
+                count=len(items),
+            )
+
+        # ------------------------------------------------ contributions - dataset
+        @app.get(
+            "/contributions/dataset/stats",
+            response_model=DatasetStatsResponse,
+            tags=["Contributions - Dataset"],
+            summary="Get dataset contribution statistics",
+            description="Returns aggregated metrics on contributions: totals, pending, approved, rejected, breakdowns by region, state, sign language variety, and total extracted frames.",
+        )
+        def get_dataset_stats() -> DatasetStatsResponse:
+            return self.contribution_service.get_dataset_stats()
+
+        @app.get(
+            "/contributions/dataset/approved",
+            response_model=ApprovedDatasetResponse,
+            tags=["Contributions - Dataset"],
+            summary="List approved contributions (public dataset)",
+            description="Returns paginated metadata for approved contributions. Excludes private contributor details, raw video files, and internal server filesystem paths.",
+        )
+        def get_approved_dataset(
+            page: int = Query(1, ge=1, description="Page number (1-based)"),
+            page_size: int = Query(20, ge=1, le=100, description="Items per page (max 100)"),
+            region: Optional[str] = Query(None, description="Filter by Indian region (NORTH, SOUTH, etc.)"),
+            state: Optional[str] = Query(None, description="Filter by Indian state or UT"),
+            sign_language_type: Optional[str] = Query(None, description="Filter by sign language variety type"),
+            gesture_name: Optional[str] = Query(None, description="Filter by gesture name (partial match)"),
+        ) -> ApprovedDatasetResponse:
+            return self.contribution_service.get_approved_contributions(
+                page=page,
+                page_size=page_size,
+                region=region,
+                state=state,
+                sign_language_type=sign_language_type,
+                gesture_name=gesture_name,
+            )
+
+        # ------------------------------------------------ contributions - ingestion
         @app.post(
             "/contributions/upload",
             response_model=ContributionUploadResponse,
             status_code=status.HTTP_201_CREATED,
+            tags=["Contributions - Ingestion"],
+            summary="Upload gesture video sample",
+            description="Uploads an MP4/WebM/MOV gesture video, validates file format, duration and size limits, and creates a staging contribution record.",
         )
         async def upload_contribution(
             file: UploadFile = File(...),
@@ -440,6 +544,9 @@ class GestureAPI:
         @app.post(
             "/contributions/{contribution_id}/extract",
             response_model=ExtractFramesResponse,
+            tags=["Contributions - Ingestion"],
+            summary="Extract and analyze video frames",
+            description="Extracts candidate gesture frames at sample_interval, generates thumbnails, and computes blur/duplicate/darkness metrics.",
         )
         def extract_contribution_frames(
             contribution_id: str,
@@ -454,6 +561,9 @@ class GestureAPI:
         @app.get(
             "/contributions/{contribution_id}",
             response_model=ContributionMetadata,
+            tags=["Contributions - Ingestion"],
+            summary="Get contribution status and metadata",
+            description="Retrieves the complete internal metadata for a contribution.",
         )
         def get_contribution(contribution_id: str) -> ContributionMetadata:
             return self.contribution_service.get_contribution(contribution_id)
@@ -461,6 +571,9 @@ class GestureAPI:
         @app.get(
             "/contributions/{contribution_id}/frames",
             response_model=FrameListResponse,
+            tags=["Contributions - Ingestion"],
+            summary="List extracted frame metadata",
+            description="Returns all extracted frames and their status (active or removed) for a contribution.",
         )
         def get_contribution_frames(contribution_id: str) -> FrameListResponse:
             frames = self.contribution_service.get_frames(contribution_id)
@@ -472,7 +585,12 @@ class GestureAPI:
                 frames=frames,
             )
 
-        @app.get("/contributions/{contribution_id}/frames/{frame_id}")
+        @app.get(
+            "/contributions/{contribution_id}/frames/{frame_id}",
+            tags=["Contributions - Ingestion"],
+            summary="Retrieve full frame image",
+            description="Streams the full resolution JPEG image of an extracted frame.",
+        )
         def get_contribution_frame_file(
             contribution_id: str, frame_id: str
         ) -> FileResponse:
@@ -481,7 +599,12 @@ class GestureAPI:
             )
             return FileResponse(file_path, media_type="image/jpeg")
 
-        @app.get("/contributions/{contribution_id}/frames/{frame_id}/thumb")
+        @app.get(
+            "/contributions/{contribution_id}/frames/{frame_id}/thumb",
+            tags=["Contributions - Ingestion"],
+            summary="Retrieve thumbnail image",
+            description="Streams the lightweight thumbnail JPEG image of an extracted frame.",
+        )
         def get_contribution_frame_thumb(
             contribution_id: str, frame_id: str
         ) -> FileResponse:
@@ -490,7 +613,12 @@ class GestureAPI:
             )
             return FileResponse(file_path, media_type="image/jpeg")
 
-        @app.delete("/contributions/{contribution_id}/frames/{frame_id}")
+        @app.delete(
+            "/contributions/{contribution_id}/frames/{frame_id}",
+            tags=["Contributions - Ingestion"],
+            summary="Exclude frame from contribution",
+            description="Marks an extracted frame as removed/unusable so it is excluded from dataset export.",
+        )
         def delete_contribution_frame(
             contribution_id: str, frame_id: str
         ) -> dict[str, Any]:
@@ -501,6 +629,9 @@ class GestureAPI:
         @app.post(
             "/contributions/{contribution_id}/submit",
             response_model=ContributionMetadata,
+            tags=["Contributions - Ingestion"],
+            summary="Submit gesture metadata and annotations",
+            description="Validates India geographic hierarchy, sign language classification, gesture semantics, and moves contribution to pending review.",
         )
         def submit_contribution(
             contribution_id: str,
@@ -510,10 +641,17 @@ class GestureAPI:
                 contribution_id, payload
             )
 
-        @app.get("/contributions", response_model=ContributionListResponse)
+        # ------------------------------------------------ contributions - moderation
+        @app.get(
+            "/contributions",
+            response_model=ContributionListResponse,
+            tags=["Contributions - Moderation"],
+            summary="List contributions with optional filters",
+            description="Lists contributions across pending, approved, and rejected datasets with optional status and region filters.",
+        )
         def list_contributions(
-            status: Optional[str] = Query(None),
-            region: Optional[str] = Query(None),
+            status: Optional[str] = Query(None, description="Filter by status (pending, approved, rejected)"),
+            region: Optional[str] = Query(None, description="Filter by region (NORTH, SOUTH, etc.)"),
         ) -> ContributionListResponse:
             items = self.contribution_service.list_contributions(
                 status_filter=status, region_filter=region
@@ -525,11 +663,22 @@ class GestureAPI:
         @app.post(
             "/contributions/{contribution_id}/review",
             response_model=ContributionMetadata,
+            tags=["Contributions - Moderation"],
+            summary="Review and approve/reject contribution (Admin only)",
+            description="Approves or rejects a submitted contribution. Requires X-Admin-Key header when GESTURA_ADMIN_TOKEN is configured in the environment.",
         )
         def review_contribution(
             contribution_id: str,
             payload: ReviewContributionRequest,
+            x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
         ) -> ContributionMetadata:
+            import os
+            required_token = os.getenv("GESTURA_ADMIN_TOKEN")
+            if required_token and x_admin_key != required_token:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Unauthorized: Admin authentication required for moderation review",
+                )
             return self.contribution_service.review_contribution(
                 contribution_id=contribution_id,
                 approved=payload.approved,

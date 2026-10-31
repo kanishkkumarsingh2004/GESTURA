@@ -462,6 +462,65 @@ export type ContributionListResponse = {
   contributions: ContributionSummary[];
 };
 
+export type GeoRegionsResponse = {
+  country: string;
+  regions: string[];
+  count: number;
+};
+
+export type GeoStatesResponse = {
+  region: string;
+  states: string[];
+  count: number;
+};
+
+export type SignLanguageTypeItem = {
+  name: string;
+  requires_variety_name: boolean;
+  description: string;
+};
+
+export type SignLanguageTypesResponse = {
+  types: SignLanguageTypeItem[];
+  count: number;
+};
+
+export type DatasetStatsResponse = {
+  total_contributions: number;
+  pending_contributions: number;
+  approved_contributions: number;
+  rejected_contributions: number;
+  by_region: Record<string, number>;
+  by_state: Record<string, number>;
+  by_sign_language_type: Record<string, number>;
+  total_extracted_frames: number;
+};
+
+export type PublicApprovedContribution = {
+  contribution_id: string;
+  gesture_name: string;
+  meaning: string;
+  category: string;
+  gesture_type: string;
+  country: string;
+  region: string;
+  state: string;
+  district_city?: string | null;
+  sign_language_type: string;
+  variety_name?: string | null;
+  video_duration_seconds: number;
+  usable_frame_count: number;
+  created_at: number;
+};
+
+export type ApprovedDatasetResponse = {
+  items: PublicApprovedContribution[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+};
+
 export async function uploadContributionVideo(
   file: File
 ): Promise<ContributionUploadResponse> {
@@ -596,4 +655,42 @@ export async function reviewContribution(
       }),
     }
   );
+}
+
+export async function getGeoRegions(): Promise<GeoRegionsResponse> {
+  return request<GeoRegionsResponse>("/contributions/geo/regions");
+}
+
+export async function getGeoStates(region: string): Promise<GeoStatesResponse> {
+  return request<GeoStatesResponse>(
+    `/contributions/geo/states?region=${encodeURIComponent(region)}`
+  );
+}
+
+export async function getSignLanguageTypes(): Promise<SignLanguageTypesResponse> {
+  return request<SignLanguageTypesResponse>("/contributions/geo/sign-language-types");
+}
+
+export async function getDatasetStats(): Promise<DatasetStatsResponse> {
+  return request<DatasetStatsResponse>("/contributions/dataset/stats");
+}
+
+export async function getApprovedDataset(params?: {
+  page?: number;
+  page_size?: number;
+  region?: string;
+  state?: string;
+  sign_language_type?: string;
+  gesture_name?: string;
+}): Promise<ApprovedDatasetResponse> {
+  const q = new URLSearchParams();
+  if (params?.page) q.append("page", String(params.page));
+  if (params?.page_size) q.append("page_size", String(params.page_size));
+  if (params?.region && params.region !== "all") q.append("region", params.region);
+  if (params?.state && params.state !== "all") q.append("state", params.state);
+  if (params?.sign_language_type && params.sign_language_type !== "all")
+    q.append("sign_language_type", params.sign_language_type);
+  if (params?.gesture_name) q.append("gesture_name", params.gesture_name);
+  const query = q.toString() ? `?${q.toString()}` : "";
+  return request<ApprovedDatasetResponse>(`/contributions/dataset/approved${query}`);
 }

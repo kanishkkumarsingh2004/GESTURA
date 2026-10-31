@@ -34,6 +34,7 @@ export const INDIA_REGIONS: Record<RegionKey, string[]> = {
     "Telangana",
     "Puducherry",
     "Lakshadweep",
+    "Andaman and Nicobar Islands",
   ],
   EAST: [
     "Bihar",

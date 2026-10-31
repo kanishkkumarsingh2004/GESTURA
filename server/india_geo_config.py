@@ -8,7 +8,7 @@ Covering all 28 states and 8 union territories.
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 COUNTRY_NAME: str = "India"
 
@@ -33,6 +33,7 @@ INDIA_REGIONS: Dict[str, List[str]] = {
         "Telangana",
         "Puducherry",
         "Lakshadweep",
+        "Andaman and Nicobar Islands",
     ],
     "EAST": [
         "Bihar",
@@ -141,4 +142,56 @@ def validate_sign_language_variety(
             )
 
     return clean_type, clean_variety
+
+
+SIGN_LANGUAGE_TYPE_DETAILS: List[Dict[str, Any]] = [
+    {
+        "name": "Indian Sign Language (ISL)",
+        "requires_variety_name": False,
+        "description": "Standardized pan-Indian sign language.",
+    },
+    {
+        "name": "Regional ISL Variant",
+        "requires_variety_name": True,
+        "description": "Regional dialect variety of ISL requiring variety or dialect specification.",
+    },
+    {
+        "name": "Local Community Sign Language",
+        "requires_variety_name": True,
+        "description": "Indigenous, village, or local deaf community sign language.",
+    },
+    {
+        "name": "Other",
+        "requires_variety_name": True,
+        "description": "Distinct sign language system requiring description.",
+    },
+    {
+        "name": "Unsure",
+        "requires_variety_name": False,
+        "description": "Uncertain dialectal classification.",
+    },
+]
+
+
+def get_all_regions() -> List[str]:
+    """Return all configured Indian regions in deterministic order."""
+    return list(INDIA_REGIONS.keys())
+
+
+def get_states_for_region(region: str) -> List[str]:
+    """Return all states and UTs for a specific region.
+
+    Raises ValueError if region is invalid.
+    """
+    region_upper = region.strip().upper()
+    if region_upper not in INDIA_REGIONS:
+        raise ValueError(
+            f"Invalid region '{region}'. Must be one of: {', '.join(sorted(VALID_REGIONS))}"
+        )
+    return list(INDIA_REGIONS[region_upper])
+
+
+def get_sign_language_type_details() -> List[Dict[str, Any]]:
+    """Return list of supported sign language types and their requirements."""
+    return list(SIGN_LANGUAGE_TYPE_DETAILS)
 

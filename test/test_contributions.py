@@ -425,6 +425,40 @@ def test_dataset_export_preserving_geographic_metadata(tmp_path: Path):
     assert entry["qualified_label"] == "VANAKKAM__south__chennai_dialect"
 
 
+def test_moderation_admin_token_protection(contrib_env, monkeypatch):
+    """Test that moderation review enforces X-Admin-Key when GESTURA_ADMIN_TOKEN is configured."""
+    service, client, tmp_path = contrib_env
+    cid = _upload_and_extract(client, tmp_path, "auth_test.mp4")
+    client.post(
+        f"/contributions/{cid}/submit",
+        json={
+            "country": "India",
+            "region": "NORTH",
+            "state": "Delhi",
+            "sign_language_type": "Indian Sign Language (ISL)",
+            "gesture_name": "NAMASTE",
+            "meaning": "Greeting",
+            "category": "Greetings",
+        },
+    )
+
+    monkeypatch.setenv("GESTURA_ADMIN_TOKEN", "secret-admin-pass-123")
+
+    # Attempt review without key -> must fail with HTTP 403
+    unauth_resp = client.post(f"/contributions/{cid}/review", json={"approved": True})
+    assert unauth_resp.status_code == 403
+    assert "Unauthorized" in unauth_resp.json()["detail"]
+
+    # Attempt review with valid X-Admin-Key -> succeeds
+    auth_resp = client.post(
+        f"/contributions/{cid}/review",
+        json={"approved": True},
+        headers={"X-Admin-Key": "secret-admin-pass-123"},
+    )
+    assert auth_resp.status_code == 200
+    assert auth_resp.json()["status"] == "approved"
+
+
 def test_grouped_split_prevents_data_leakage(tmp_path: Path):
     """Test that all frames from the same video/contribution stay in the exact same split."""
     samples = []
@@ -473,3 +507,201 @@ def test_grouped_split_prevents_data_leakage(tmp_path: Path):
     assert split_cids["train"].isdisjoint(split_cids["test"])
     assert split_cids["validation"].isdisjoint(split_cids["test"])
     assert len(split_cids["train"] | split_cids["validation"] | split_cids["test"]) == 6
+
+
+def test_geo_regions_api(contrib_env):
+    """Test GET /contributions/geo/regions returns all 6 Indian regions."""
+    service, client, tmp_path = contrib_env
+    res = client.get("/contributions/geo/regions")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["country"] == "India"
+    assert data["count"] == 6
+    assert set(data["regions"]) == {"NORTH", "SOUTH", "EAST", "WEST", "CENTRAL", "NORTHEAST"}
+
+
+def test_geo_states_api(contrib_env):
+    """Test GET /contributions/geo/states validates region and returns matching states/UTs."""
+    service, client, tmp_path = contrib_env
+
+    # Valid region (case-insensitive)
+    res = client.get("/contributions/geo/states?region=south")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["region"] == "SOUTH"
+    assert data["count"] == 8
+    assert "Tamil Nadu" in data["states"]
+    assert "Karnataka" in data["states"]
+    assert "Andaman and Nicobar Islands" in data["states"]
+
+    # Invalid region -> HTTP 400
+    invalid_res = client.get("/contributions/geo/states?region=INVALID_REGION")
+    assert invalid_res.status_code == 400
+    assert "Invalid region" in invalid_res.json()["detail"]
+
+
+def test_geo_sign_language_types_api(contrib_env):
+    """Test GET /contributions/geo/sign-language-types returns supported classifications and rules."""
+    service, client, tmp_path = contrib_env
+    res = client.get("/contributions/geo/sign-language-types")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["count"] == 5
+    types_map = {item["name"]: item for item in data["types"]}
+
+    # ISL does not require variety name
+    assert types_map["Indian Sign Language (ISL)"]["requires_variety_name"] is False
+    # Regional ISL Variant requires variety name
+    assert types_map["Regional ISL Variant"]["requires_variety_name"] is True
+    # Local Community Sign Language requires variety name
+    assert types_map["Local Community Sign Language"]["requires_variety_name"] is True
+
+
+def test_dataset_stats_api(contrib_env):
+    """Test GET /contributions/dataset/stats metrics calculation and aggregation."""
+    service, client, tmp_path = contrib_env
+
+    # Initial stats
+    res1 = client.get("/contributions/dataset/stats")
+    assert res1.status_code == 200
+    data1 = res1.json()
+    initial_total = data1["total_contributions"]
+    assert "NORTH" in data1["by_region"]
+    assert "Indian Sign Language (ISL)" in data1["by_sign_language_type"]
+
+    # Upload and submit a sample contribution
+    cid = _upload_and_extract(client, tmp_path, "stats_sample.mp4")
+    client.post(
+        f"/contributions/{cid}/submit",
+        json={
+            "country": "India",
+            "region": "NORTH",
+            "state": "Delhi",
+            "sign_language_type": "Indian Sign Language (ISL)",
+            "gesture_name": "SHUKRIYA",
+            "meaning": "Thank you",
+            "category": "Greetings",
+        },
+    )
+
+    res2 = client.get("/contributions/dataset/stats")
+    assert res2.status_code == 200
+    data2 = res2.json()
+    assert data2["total_contributions"] == initial_total + 1
+    assert data2["pending_contributions"] >= 1
+    assert data2["by_region"]["NORTH"] >= 1
+    assert data2["total_extracted_frames"] > 0
+
+    # Moderate and approve
+    client.post(f"/contributions/{cid}/review", json={"approved": True})
+
+    res3 = client.get("/contributions/dataset/stats")
+    assert res3.status_code == 200
+    data3 = res3.json()
+    assert data3["approved_contributions"] == data2["approved_contributions"] + 1
+    assert data3["pending_contributions"] == data2["pending_contributions"] - 1
+
+
+def test_dataset_approved_api_and_privacy_sanitization(contrib_env):
+    """Test GET /contributions/dataset/approved filtering, pagination, and privacy sanitization."""
+    service, client, tmp_path = contrib_env
+
+    # Create and approve sample 1 in NORTH / Delhi
+    cid1 = _upload_and_extract(client, tmp_path, "sample_north.mp4")
+    client.post(
+        f"/contributions/{cid1}/submit",
+        json={
+            "country": "India",
+            "region": "NORTH",
+            "state": "Delhi",
+            "sign_language_type": "Indian Sign Language (ISL)",
+            "gesture_name": "NAMASTE",
+            "meaning": "Traditional Indian greeting",
+            "category": "Greetings",
+            "contributor_id": "secret_user_42",
+        },
+    )
+    client.post(f"/contributions/{cid1}/review", json={"approved": True})
+
+    # Create and approve sample 2 in SOUTH / Tamil Nadu
+    cid2 = _upload_and_extract(client, tmp_path, "sample_south.mp4")
+    client.post(
+        f"/contributions/{cid2}/submit",
+        json={
+            "country": "India",
+            "region": "SOUTH",
+            "state": "Tamil Nadu",
+            "sign_language_type": "Regional ISL Variant",
+            "variety_name": "Chennai Dialect",
+            "gesture_name": "VANAKKAM",
+            "meaning": "Tamil greeting",
+            "category": "Greetings",
+            "contributor_id": "private_donor_99",
+        },
+    )
+    client.post(f"/contributions/{cid2}/review", json={"approved": True})
+
+    # Query approved dataset
+    res = client.get("/contributions/dataset/approved?page=1&page_size=10")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["total"] >= 2
+    assert len(data["items"]) >= 2
+
+    # PRIVACY SANITIZATION AUDIT:
+    # Ensure contributor_id, video_filename, and disk paths are NEVER exposed in approved dataset
+    for item in data["items"]:
+        assert "contributor_id" not in item
+        assert "video_filename" not in item
+        assert "file_path" not in item
+        assert "thumb_path" not in item
+        # Valid public fields must be populated
+        assert item["country"] == "India"
+        assert item["gesture_name"] in {"NAMASTE", "VANAKKAM"}
+        assert item["usable_frame_count"] > 0
+
+    # Filter by region
+    res_north = client.get("/contributions/dataset/approved?region=NORTH")
+    data_north = res_north.json()
+    assert all(item["region"] == "NORTH" for item in data_north["items"])
+    assert any(item["gesture_name"] == "NAMASTE" for item in data_north["items"])
+
+    # Filter by gesture_name
+    res_vanakkam = client.get("/contributions/dataset/approved?gesture_name=vanakkam")
+    data_vanakkam = res_vanakkam.json()
+    assert len(data_vanakkam["items"]) == 1
+    assert data_vanakkam["items"][0]["gesture_name"] == "VANAKKAM"
+    assert data_vanakkam["items"][0]["variety_name"] == "Chennai Dialect"
+
+
+def test_openapi_schema_contains_new_endpoints(contrib_env):
+    """Test that FastAPI compiles complete OpenAPI schema with new tags and endpoints."""
+    service, client, tmp_path = contrib_env
+    res = client.get("/openapi.json")
+    assert res.status_code == 200
+    schema = res.json()
+    paths = schema.get("paths", {})
+
+    # Check geography endpoints
+    assert "/contributions/geo/regions" in paths
+    assert "/contributions/geo/states" in paths
+    assert "/contributions/geo/sign-language-types" in paths
+
+    # Check dataset endpoints
+    assert "/contributions/dataset/stats" in paths
+    assert "/contributions/dataset/approved" in paths
+
+    # Check tags
+    tags = {tag["name"] for tag in schema.get("tags", [])}
+    # Alternatively check endpoint tags
+    endpoint_tags = set()
+    for path_data in paths.values():
+        for operation in path_data.values():
+            if isinstance(operation, dict) and "tags" in operation:
+                endpoint_tags.update(operation["tags"])
+
+    assert "Contributions - Geography" in endpoint_tags
+    assert "Contributions - Dataset" in endpoint_tags
+    assert "Contributions - Ingestion" in endpoint_tags
+    assert "Contributions - Moderation" in endpoint_tags
+
