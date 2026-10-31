@@ -23,6 +23,17 @@ import {
   type ContributionSummary,
 } from "@/lib/api";
 import {
+  COUNTRY_NAME,
+  INDIA_REGIONS,
+  REGION_LABELS,
+  SIGN_LANGUAGE_TYPES,
+  type RegionKey,
+  type SignLanguageType,
+  getRegions,
+  getStatesForRegion,
+  requiresVarietyName,
+} from "@/lib/india-geo-data";
+import {
   UploadCloud,
   FileVideo,
   Film,
@@ -43,22 +54,17 @@ import {
   ShieldCheck,
   Tag,
   BookOpen,
+  MapPin,
+  Compass,
 } from "lucide-react";
-
-const POPULAR_LANGUAGES = [
-  { code: "ISL", label: "Indian Sign Language (ISL)" },
-  { code: "ASL", label: "American Sign Language (ASL)" },
-  { code: "BSL", label: "British Sign Language (BSL)" },
-  { code: "Auslan", label: "Australian Sign Language" },
-  { code: "Other", label: "Other / Custom" },
-];
 
 const POPULAR_CATEGORIES = [
   "Greetings",
   "Survival & Emergency",
-  "Common Phrases",
+  "Daily Communication",
   "Alphabet & Numbers",
   "Emotions & Sentiments",
+  "Cultural & Regional",
   "Custom",
 ];
 
@@ -84,11 +90,16 @@ export default function ContributePage() {
   const [qualityReport, setQualityReport] = useState<QualityReport | null>(null);
   const [inspectingFrame, setInspectingFrame] = useState<FrameMetadata | null>(null);
 
-  // Step 3: Gesture Metadata form
+  // Step 3: Geographic & Linguistic Metadata form (India-First)
+  const [region, setRegion] = useState<RegionKey>("NORTH");
+  const [selectedState, setSelectedState] = useState<string>("Delhi");
+  const [districtCity, setDistrictCity] = useState<string>("");
+  const [signLanguageType, setSignLanguageType] = useState<SignLanguageType>("Indian Sign Language (ISL)");
+  const [varietyName, setVarietyName] = useState<string>("");
+
+  // Gesture semantics
   const [gestureName, setGestureName] = useState("");
   const [meaning, setMeaning] = useState("");
-  const [signLanguage, setSignLanguage] = useState("ISL");
-  const [customLanguage, setCustomLanguage] = useState("");
   const [category, setCategory] = useState("Greetings");
   const [customCategory, setCustomCategory] = useState("");
   const [gestureType, setGestureType] = useState<"static" | "dynamic">("dynamic");
@@ -104,10 +115,20 @@ export default function ContributePage() {
   const [communitySubmissions, setCommunitySubmissions] = useState<ContributionSummary[]>([]);
   const [isLoadingSubmissions, setIsLoadingSubmissions] = useState(false);
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [browseRegionFilter, setBrowseRegionFilter] = useState<string>("all");
   const [activeReviewItem, setActiveReviewItem] = useState<ContributionMetadata | null>(null);
   const [isModerating, setIsModerating] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // When region changes, update state to first state of the region
+  const handleRegionChange = (newRegion: RegionKey) => {
+    setRegion(newRegion);
+    const availableStates = getStatesForRegion(newRegion);
+    if (availableStates.length > 0) {
+      setSelectedState(availableStates[0]);
+    }
+  };
 
   // Cleanup object URLs on unmount
   useEffect(() => {
@@ -123,12 +144,15 @@ export default function ContributePage() {
     if (activeTab === "browse") {
       fetchSubmissions();
     }
-  }, [activeTab, statusFilter]);
+  }, [activeTab, statusFilter, browseRegionFilter]);
 
   const fetchSubmissions = async () => {
     setIsLoadingSubmissions(true);
     try {
-      const res = await listContributions(statusFilter === "all" ? undefined : statusFilter);
+      const res = await listContributions(
+        statusFilter === "all" ? undefined : statusFilter,
+        browseRegionFilter === "all" ? undefined : browseRegionFilter
+      );
       setCommunitySubmissions(res.contributions || []);
     } catch (err: any) {
       console.error("Failed to load community submissions:", err);
@@ -245,7 +269,6 @@ export default function ContributePage() {
       setFrames(res.frames || []);
       setQualityReport(res.quality_report);
 
-      // Refresh metadata
       const meta = await getContribution(cid);
       setContributionMeta(meta);
     } catch (err: any) {
@@ -279,22 +302,29 @@ export default function ContributePage() {
     return frames.filter((f) => f.status === "active").length;
   }, [frames]);
 
-  // Submit contribution
+  // Submit contribution (India-First)
   const handleSubmit = async () => {
     if (!contributionId) return;
-    const finalLang = signLanguage === "Other" ? customLanguage.trim() : signLanguage;
     const finalCat = category === "Custom" ? customCategory.trim() : category;
 
+    if (!region) {
+      setErrorMsg("Please select an Indian geographic region.");
+      return;
+    }
+    if (!selectedState) {
+      setErrorMsg("Please select a State or Union Territory.");
+      return;
+    }
+    if (requiresVarietyName(signLanguageType) && !varietyName.trim()) {
+      setErrorMsg(`Please specify the variety or community name for '${signLanguageType}'.`);
+      return;
+    }
     if (!gestureName.trim()) {
       setErrorMsg("Please enter a gesture name.");
       return;
     }
     if (!meaning.trim()) {
       setErrorMsg("Please enter the meaning or translation.");
-      return;
-    }
-    if (!finalLang) {
-      setErrorMsg("Please specify the sign language.");
       return;
     }
     if (!finalCat) {
@@ -311,9 +341,14 @@ export default function ContributePage() {
 
     try {
       const updated = await submitContribution(contributionId, {
+        country: "India",
+        region,
+        state: selectedState,
+        district_city: districtCity.trim() || null,
+        sign_language_type: signLanguageType,
+        variety_name: varietyName.trim() || null,
         gesture_name: gestureName,
         meaning,
-        sign_language: finalLang,
         category: finalCat,
         gesture_type: gestureType,
         description: description.trim() || null,
@@ -331,10 +366,13 @@ export default function ContributePage() {
   // Reset to start a new contribution
   const handleStartNew = () => {
     handleRemoveFile();
+    setRegion("NORTH");
+    setSelectedState("Delhi");
+    setDistrictCity("");
+    setSignLanguageType("Indian Sign Language (ISL)");
+    setVarietyName("");
     setGestureName("");
     setMeaning("");
-    setSignLanguage("ISL");
-    setCustomLanguage("");
     setCategory("Greetings");
     setCustomCategory("");
     setGestureType("dynamic");
@@ -371,19 +409,18 @@ export default function ContributePage() {
           <div>
             <div className="flex items-center gap-2 mb-2">
               <Badge variant="yellow" dot size="sm">
-                COMMUNITY DATASET PIPELINE
+                INDIA-FIRST DATASET INITIATIVE
               </Badge>
               <Badge variant="outline" size="sm">
-                ML TRAINING ACCELERATOR
+                BHARAT SIGN LANGUAGE REPOSITORY
               </Badge>
             </div>
             <h1 className="font-heading font-bold text-3xl sm:text-4xl tracking-tight text-text-primary">
-              Contribute a Gesture
+              Contribute a Gesture (India)
             </h1>
             <p className="text-sm text-text-secondary mt-1 max-w-2xl">
-              Upload sign language video samples to expand GESTURA&apos;s recognition vocabulary.
-              Our computer vision pipeline validates clarity, extracts key frames, and pre-processes
-              samples for future model training.
+              Contributing video samples of Indian Sign Language (ISL) and its regional community varieties.
+              All submissions record rigorous geographic provenance across 6 Indian regions, 28 states, and 8 union territories.
             </p>
           </div>
 
@@ -408,7 +445,7 @@ export default function ContributePage() {
               }`}
             >
               <BookOpen className="w-4 h-4" />
-              Browse Dataset ({communitySubmissions.length})
+              Browse Indian Dataset ({communitySubmissions.length})
             </button>
           </div>
         </div>
@@ -442,10 +479,10 @@ export default function ContributePage() {
                     PENDING APPROVAL
                   </Badge>
                   <h2 className="font-heading font-bold text-2xl sm:text-3xl text-text-primary">
-                    Contribution Submitted Successfully!
+                    Gesture Sample Recorded!
                   </h2>
                   <p className="text-sm text-text-secondary max-w-lg mx-auto">
-                    Thank you for contributing to GESTURA. Your gesture sample has been recorded in the community staging dataset with{" "}
+                    Your gesture sample has been staged into the India regional dataset repository with{" "}
                     <span className="text-yellow-accent font-semibold">{usableFramesCount} usable frames</span>.
                   </p>
                 </div>
@@ -457,19 +494,38 @@ export default function ContributePage() {
                       <span className="text-yellow-accent">{contributionMeta.contribution_id}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-text-muted">Gesture Name:</span>
-                      <span className="text-text-primary font-semibold">{contributionMeta.gesture_name}</span>
+                      <span className="text-text-muted">Country & Region:</span>
+                      <span className="text-text-primary font-semibold">
+                        India • {contributionMeta.region}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-text-muted">State & District:</span>
+                      <span>
+                        {contributionMeta.state}
+                        {contributionMeta.district_city ? ` (${contributionMeta.district_city})` : ""}
+                      </span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-text-muted">Sign Language:</span>
-                      <span>{contributionMeta.sign_language}</span>
+                      <span className="text-yellow-accent">{contributionMeta.sign_language_type}</span>
+                    </div>
+                    {contributionMeta.variety_name && (
+                      <div className="flex justify-between">
+                        <span className="text-text-muted">Variety Name:</span>
+                        <span>{contributionMeta.variety_name}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between">
+                      <span className="text-text-muted">Gesture Name:</span>
+                      <span className="text-text-primary font-semibold">{contributionMeta.gesture_name}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-text-muted">Category:</span>
                       <span>{contributionMeta.category}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-text-muted">Gesture Type:</span>
+                      <span className="text-text-muted">Motion Dynamics:</span>
                       <span className="uppercase">{contributionMeta.gesture_type}</span>
                     </div>
                   </div>
@@ -478,11 +534,11 @@ export default function ContributePage() {
                 <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-4">
                   <Button variant="primary" onClick={handleStartNew}>
                     <RefreshCw className="w-4 h-4 mr-2" />
-                    Contribute Another Gesture
+                    Contribute Another Indian Gesture
                   </Button>
                   <Button variant="secondary" onClick={() => setActiveTab("browse")}>
                     <Eye className="w-4 h-4 mr-2" />
-                    View in Dataset Catalog
+                    View in Regional Catalog
                   </Button>
                 </div>
               </Card>
@@ -534,7 +590,7 @@ export default function ContributePage() {
                             <span className="text-yellow-accent underline underline-offset-2">browse files</span>
                           </p>
                           <p className="text-xs text-text-muted">
-                            Supported: MP4, MOV, WebM, AVI, MKV (Clear hand visibility recommended)
+                            Supported: MP4, MOV, WebM, AVI, MKV (India sign language recordings)
                           </p>
                         </div>
                       </div>
@@ -757,7 +813,6 @@ export default function ContributePage() {
                                   loading="lazy"
                                 />
 
-                                {/* Frame badge overlays */}
                                 <div className="absolute top-1 left-1 bg-black/70 px-1 py-0.5 rounded text-[9px] font-mono text-text-primary">
                                   #{frame.frame_index}
                                 </div>
@@ -774,7 +829,6 @@ export default function ContributePage() {
                                   </div>
                                 )}
 
-                                {/* Hover actions */}
                                 <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1.5 p-1">
                                   <button
                                     onClick={() => setInspectingFrame(frame)}
@@ -804,7 +858,7 @@ export default function ContributePage() {
                   )}
                 </div>
 
-                {/* Right Column: Gesture Metadata & Submit (5 cols) */}
+                {/* Right Column: India Geographic & Linguistic Annotation & Submit (5 cols) */}
                 <div className="lg:col-span-5 space-y-6">
                   <Card elevated className="space-y-5 sticky top-20">
                     <div className="flex items-center justify-between pb-3 border-b border-surface-border">
@@ -813,17 +867,132 @@ export default function ContributePage() {
                           3
                         </span>
                         <h2 className="font-heading font-semibold text-lg text-text-primary">
-                          Gesture Annotation
+                          India Geographic & Gesture Details
                         </h2>
                       </div>
-                      <Badge variant="outline" size="sm">
-                        Metadata Form
+                      <Badge variant="yellow" size="sm">
+                        Country: India
                       </Badge>
                     </div>
 
                     <div className="space-y-4 text-xs">
-                      {/* Gesture Name */}
+                      {/* Fixed Country with visual badge */}
+                      <div className="p-2.5 bg-surface-elevated rounded-lg border border-surface-border flex items-center justify-between">
+                        <span className="text-text-muted font-medium flex items-center gap-1.5">
+                          <MapPin className="w-3.5 h-3.5 text-yellow-accent" />
+                          Target Country:
+                        </span>
+                        <span className="font-mono text-text-primary font-bold">
+                          India (Fixed)
+                        </span>
+                      </div>
+
+                      {/* Geographic Region */}
                       <div className="space-y-1.5">
+                        <label className="text-text-secondary font-medium flex items-center justify-between">
+                          <span className="flex items-center gap-1.5">
+                            <Compass className="w-3.5 h-3.5 text-yellow-accent" />
+                            Geographic Region *
+                          </span>
+                          <span className="text-text-muted font-mono text-[10px]">6 REGIONS</span>
+                        </label>
+                        <select
+                          value={region}
+                          onChange={(e) => handleRegionChange(e.target.value as RegionKey)}
+                          className="w-full px-3 py-2 rounded-lg bg-surface-elevated border border-surface-border text-text-primary focus:outline-none focus:border-yellow-accent text-xs font-medium"
+                        >
+                          {getRegions().map((r) => (
+                            <option key={r} value={r}>
+                              {REGION_LABELS[r]} ({r})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* State / UT (filtered by selected Region) */}
+                      <div className="space-y-1.5">
+                        <label className="text-text-secondary font-medium flex items-center justify-between">
+                          <span>State / Union Territory *</span>
+                          <span className="text-text-muted font-mono text-[10px]">
+                            {getStatesForRegion(region).length} IN {region}
+                          </span>
+                        </label>
+                        <select
+                          value={selectedState}
+                          onChange={(e) => setSelectedState(e.target.value)}
+                          className="w-full px-3 py-2 rounded-lg bg-surface-elevated border border-surface-border text-text-primary focus:outline-none focus:border-yellow-accent text-xs font-medium"
+                        >
+                          {getStatesForRegion(region).map((st) => (
+                            <option key={st} value={st}>
+                              {st}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* District / City (Optional) */}
+                      <div className="space-y-1.5">
+                        <label className="text-text-secondary font-medium">
+                          District / City (Optional)
+                        </label>
+                        <input
+                          type="text"
+                          value={districtCity}
+                          onChange={(e) => setDistrictCity(e.target.value)}
+                          placeholder="e.g. New Delhi, Bengaluru, Pune, Dispur"
+                          className="w-full px-3 py-2 rounded-lg bg-surface-elevated border border-surface-border text-text-primary placeholder:text-text-muted focus:outline-none focus:border-yellow-accent text-xs"
+                        />
+                      </div>
+
+                      {/* Sign Language Variety Classification */}
+                      <div className="space-y-1.5">
+                        <label className="text-text-secondary font-medium">
+                          Sign Language Variety *
+                        </label>
+                        <select
+                          value={signLanguageType}
+                          onChange={(e) => setSignLanguageType(e.target.value as SignLanguageType)}
+                          className="w-full px-3 py-2 rounded-lg bg-surface-elevated border border-surface-border text-text-primary focus:outline-none focus:border-yellow-accent text-xs font-medium"
+                        >
+                          {SIGN_LANGUAGE_TYPES.map((t) => (
+                            <option key={t} value={t}>
+                              {t}
+                            </option>
+                          ))}
+                        </select>
+                        <span className="text-[10px] text-text-muted block">
+                          Never automatically inferred from spoken language or state.
+                        </span>
+                      </div>
+
+                      {/* Conditional Variety / Community Name */}
+                      {requiresVarietyName(signLanguageType) && (
+                        <div className="space-y-1.5 animate-fadeIn p-2.5 rounded-lg bg-yellow-dim/30 border border-yellow-accent/30">
+                          <label className="text-yellow-accent font-medium block">
+                            {signLanguageType === "Regional ISL Variant"
+                              ? "Regional Variety / Dialect Name *"
+                              : signLanguageType === "Local Community Sign Language"
+                              ? "Local Community / Variety Name *"
+                              : "Specify Sign Variety / Description *"}
+                          </label>
+                          <input
+                            type="text"
+                            value={varietyName}
+                            onChange={(e) => setVarietyName(e.target.value)}
+                            placeholder={
+                              signLanguageType === "Regional ISL Variant"
+                                ? "e.g. Delhi ISL, Kolkata Variety, Mumbai Dialect"
+                                : signLanguageType === "Local Community Sign Language"
+                                ? "e.g. Alipur Sign Language, Naga Community Sign"
+                                : "Describe language / sign system"
+                            }
+                            className="w-full px-3 py-2 rounded-lg bg-surface-elevated border border-surface-border text-text-primary placeholder:text-text-muted focus:outline-none focus:border-yellow-accent text-xs"
+                          />
+                        </div>
+                      )}
+
+                      {/* Gesture Name */}
+                      <div className="space-y-1.5 pt-2 border-t border-surface-border">
                         <label className="text-text-secondary font-medium flex items-center justify-between">
                           <span>Gesture Label / Name *</span>
                           <span className="text-text-muted font-mono text-[10px]">UPPERCASE</span>
@@ -832,7 +1001,7 @@ export default function ContributePage() {
                           type="text"
                           value={gestureName}
                           onChange={(e) => setGestureName(e.target.value.toUpperCase())}
-                          placeholder="e.g. NAMASTE, THANK_YOU, WATER"
+                          placeholder="e.g. NAMASTE, DHANYAVAAD, PANI, HELP"
                           className="w-full px-3 py-2 rounded-lg bg-surface-elevated border border-surface-border text-text-primary placeholder:text-text-muted focus:outline-none focus:border-yellow-accent font-mono text-sm"
                         />
                       </div>
@@ -846,41 +1015,9 @@ export default function ContributePage() {
                           type="text"
                           value={meaning}
                           onChange={(e) => setMeaning(e.target.value)}
-                          placeholder="e.g. Traditional respectful greeting or salutation"
+                          placeholder="e.g. Traditional Indian respectful salutation"
                           className="w-full px-3 py-2 rounded-lg bg-surface-elevated border border-surface-border text-text-primary placeholder:text-text-muted focus:outline-none focus:border-yellow-accent text-sm"
                         />
-                      </div>
-
-                      {/* Sign Language Selection */}
-                      <div className="space-y-1.5">
-                        <label className="text-text-secondary font-medium">
-                          Sign Language Dialect *
-                        </label>
-                        <div className="grid grid-cols-2 gap-1.5">
-                          {POPULAR_LANGUAGES.map((lang) => (
-                            <button
-                              key={lang.code}
-                              type="button"
-                              onClick={() => setSignLanguage(lang.code)}
-                              className={`px-2.5 py-1.5 rounded-lg text-left transition-colors border text-[11px] font-medium truncate ${
-                                signLanguage === lang.code
-                                  ? "border-yellow-accent bg-yellow-dim text-yellow-accent"
-                                  : "border-surface-border bg-surface-elevated text-text-secondary hover:text-text-primary"
-                              }`}
-                            >
-                              {lang.code}
-                            </button>
-                          ))}
-                        </div>
-                        {signLanguage === "Other" && (
-                          <input
-                            type="text"
-                            value={customLanguage}
-                            onChange={(e) => setCustomLanguage(e.target.value)}
-                            placeholder="Specify Sign Language (e.g. LSF, DGS)"
-                            className="w-full mt-2 px-3 py-1.5 rounded-lg bg-surface-elevated border border-surface-border text-text-primary placeholder:text-text-muted focus:outline-none focus:border-yellow-accent text-xs"
-                          />
-                        )}
                       </div>
 
                       {/* Category */}
@@ -944,16 +1081,16 @@ export default function ContributePage() {
                         </div>
                       </div>
 
-                      {/* Description / Context */}
+                      {/* Description / Regional Context */}
                       <div className="space-y-1.5">
                         <label className="text-text-secondary font-medium">
-                          Notes / Usage Context (Optional)
+                          Regional Context & Usage Notes (Optional)
                         </label>
                         <textarea
                           rows={2}
                           value={description}
                           onChange={(e) => setDescription(e.target.value)}
-                          placeholder="Describe hand placement, orientation, or regional context..."
+                          placeholder="Describe hand placement, orientation, or regional nuances..."
                           className="w-full px-3 py-2 rounded-lg bg-surface-elevated border border-surface-border text-text-primary placeholder:text-text-muted focus:outline-none focus:border-yellow-accent text-xs"
                         />
                       </div>
@@ -991,11 +1128,11 @@ export default function ContributePage() {
                         isLoading={isSubmitting}
                       >
                         <Send className="w-4 h-4 mr-2" />
-                        Submit to Moderation Queue
+                        Submit to India Moderation Queue
                       </Button>
 
                       <p className="text-[11px] text-text-muted text-center leading-relaxed">
-                        Submitted gestures undergo automated deduplication and human-in-the-loop review before being promoted to model training sets.
+                        Submissions are stored under <code className="text-yellow-accent">data/contributions/india/</code>, quarantined until approved, and separated by region to avoid cross-community conflation.
                       </p>
                     </div>
                   </Card>
@@ -1006,27 +1143,46 @@ export default function ContributePage() {
         )}
 
         {/* ========================================================================= */}
-        {/* TAB 2: BROWSE COMMUNITY DATASET                                           */}
+        {/* TAB 2: BROWSE INDIAN DATASET                                              */}
         {/* ========================================================================= */}
         {activeTab === "browse" && (
           <div className="space-y-6">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-surface-card p-4 rounded-xl border border-surface-border">
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-text-secondary font-medium">Filter by Status:</span>
-                <div className="flex items-center gap-1.5">
-                  {["all", "pending_approval", "approved", "rejected"].map((st) => (
-                    <button
-                      key={st}
-                      onClick={() => setStatusFilter(st)}
-                      className={`px-3 py-1 rounded-md text-xs font-mono transition-colors ${
-                        statusFilter === st
-                          ? "bg-yellow-accent text-black font-semibold"
-                          : "bg-surface-elevated text-text-secondary hover:text-text-primary"
-                      }`}
-                    >
-                      {st.replace("_", " ").toUpperCase()}
-                    </button>
-                  ))}
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-surface-card p-4 rounded-xl border border-surface-border">
+              {/* Region and Status Filters */}
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-text-secondary font-medium">Region:</span>
+                  <select
+                    value={browseRegionFilter}
+                    onChange={(e) => setBrowseRegionFilter(e.target.value)}
+                    className="px-2.5 py-1 rounded-md bg-surface-elevated border border-surface-border text-xs font-mono text-text-primary focus:outline-none focus:border-yellow-accent"
+                  >
+                    <option value="all">ALL REGIONS</option>
+                    {getRegions().map((r) => (
+                      <option key={r} value={r}>
+                        {r}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-text-secondary font-medium">Status:</span>
+                  <div className="flex items-center gap-1">
+                    {["all", "pending_approval", "approved", "rejected"].map((st) => (
+                      <button
+                        key={st}
+                        onClick={() => setStatusFilter(st)}
+                        className={`px-2.5 py-1 rounded-md text-[11px] font-mono transition-colors ${
+                          statusFilter === st
+                            ? "bg-yellow-accent text-black font-semibold"
+                            : "bg-surface-elevated text-text-secondary hover:text-text-primary"
+                        }`}
+                      >
+                        {st.replace("_", " ").toUpperCase()}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
 
@@ -1039,16 +1195,16 @@ export default function ContributePage() {
             {isLoadingSubmissions ? (
               <div className="py-16 text-center text-text-muted space-y-2">
                 <RefreshCw className="w-6 h-6 animate-spin mx-auto text-yellow-accent" />
-                <p className="text-xs font-mono">Loading community contributions...</p>
+                <p className="text-xs font-mono">Loading Indian gesture contributions...</p>
               </div>
             ) : communitySubmissions.length === 0 ? (
               <Card elevated className="text-center py-16 space-y-3">
                 <Film className="w-10 h-10 text-text-muted mx-auto" />
                 <h3 className="font-heading font-semibold text-text-primary">No Contributions Found</h3>
                 <p className="text-xs text-text-secondary max-w-sm mx-auto">
-                  {statusFilter === "all"
-                    ? "No gesture samples have been submitted yet. Be the first contributor!"
-                    : `No contributions matching status '${statusFilter}'.`}
+                  {statusFilter === "all" && browseRegionFilter === "all"
+                    ? "No gesture samples have been submitted yet. Be the first contributor for India!"
+                    : "No contributions match your current region and status filters."}
                 </p>
                 <Button variant="primary" size="sm" onClick={() => setActiveTab("contribute")}>
                   <UploadCloud className="w-3.5 h-3.5 mr-1.5" />
@@ -1086,11 +1242,28 @@ export default function ContributePage() {
                           </Badge>
                         </div>
 
+                        {/* Geographic metadata banner */}
+                        <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                          <span className="px-2 py-0.5 rounded bg-yellow-dim text-yellow-accent border border-yellow-accent/30 text-[10px] font-mono font-semibold">
+                            {item.region || "INDIA"}
+                          </span>
+                          {item.state && (
+                            <span className="px-2 py-0.5 rounded bg-surface-elevated text-text-secondary border border-surface-border text-[10px] font-mono">
+                              {item.state}
+                            </span>
+                          )}
+                          {item.variety_name && (
+                            <span className="px-2 py-0.5 rounded bg-surface-elevated text-text-primary border border-surface-border text-[10px] font-mono">
+                              Variety: {item.variety_name}
+                            </span>
+                          )}
+                        </div>
+
                         <div className="grid grid-cols-3 gap-1.5 pt-2 border-t border-surface-border text-center">
                           <div className="p-1.5 bg-surface-elevated rounded border border-surface-border">
-                            <span className="text-[9px] text-text-muted font-mono block">LANG</span>
-                            <span className="text-xs font-bold text-yellow-accent font-mono truncate block">
-                              {item.sign_language || "N/A"}
+                            <span className="text-[9px] text-text-muted font-mono block">SIGN TYPE</span>
+                            <span className="text-[11px] font-bold text-yellow-accent font-mono truncate block" title={item.sign_language_type || "ISL"}>
+                              {item.sign_language_type ? item.sign_language_type.replace("Indian Sign Language (ISL)", "ISL") : "ISL"}
                             </span>
                           </div>
                           <div className="p-1.5 bg-surface-elevated rounded border border-surface-border">
@@ -1120,7 +1293,7 @@ export default function ContributePage() {
                                 onClick={() => handleModerate(item.contribution_id, true)}
                                 disabled={isModerating}
                                 className="px-2 py-1 rounded bg-status-success/20 hover:bg-status-success/40 text-status-success font-medium text-[11px] transition-colors"
-                                title="Approve into training dataset"
+                                title="Approve into regional training dataset"
                               >
                                 Approve
                               </button>
@@ -1231,4 +1404,3 @@ export default function ContributePage() {
     </div>
   );
 }
-

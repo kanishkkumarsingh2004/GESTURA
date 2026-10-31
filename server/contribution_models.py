@@ -1,4 +1,4 @@
-"""Pydantic models for the Contribute a Gesture pipeline."""
+"""Pydantic models for the India-first Contribute a Gesture pipeline."""
 
 from __future__ import annotations
 
@@ -39,10 +39,20 @@ class ContributionMetadata(BaseModel):
     video_resolution: List[int]
     total_video_frames: int
 
+    # Geographic metadata (India-specific)
+    country: str = "India"
+    region: Optional[str] = None  # NORTH, SOUTH, EAST, WEST, CENTRAL, NORTHEAST
+    state: Optional[str] = None
+    district_city: Optional[str] = None
+
+    # Sign language classification
+    sign_language_type: Optional[str] = None  # ISL, Regional ISL Variant, etc.
+    variety_name: Optional[str] = None
+    sign_language: Optional[str] = None  # Canonical display string for backward compatibility
+
     # Gesture information (filled during submission)
     gesture_name: Optional[str] = None
     meaning: Optional[str] = None
-    sign_language: Optional[str] = None
     category: Optional[str] = None
     description: Optional[str] = None
     gesture_type: Optional[str] = "dynamic"  # "static", "dynamic", "unknown"
@@ -90,9 +100,22 @@ class FrameListResponse(BaseModel):
 
 
 class SubmitContributionRequest(BaseModel):
+    # Country is fixed to India
+    country: str = Field(default="India", pattern=r"^India$")
+    region: str = Field(..., description="Geographic region of India (NORTH, SOUTH, EAST, WEST, CENTRAL, NORTHEAST)")
+    state: str = Field(..., min_length=2, max_length=60, description="Indian state or union territory")
+    district_city: Optional[str] = Field(default=None, max_length=100)
+
+    # Sign language classification
+    sign_language_type: str = Field(..., description="Sign language variety type")
+    variety_name: Optional[str] = Field(default=None, max_length=100)
+
+    # Legacy field accepted for backward compatibility (optional)
+    sign_language: Optional[str] = Field(default=None, max_length=100)
+
+    # Gesture details
     gesture_name: str = Field(..., min_length=2, max_length=50)
     meaning: str = Field(..., min_length=2, max_length=200)
-    sign_language: str = Field(..., min_length=2, max_length=50)
     category: str = Field(..., min_length=2, max_length=50)
     description: Optional[str] = Field(None, max_length=1000)
     gesture_type: str = Field(default="dynamic", pattern="^(static|dynamic|unknown)$")
@@ -106,11 +129,17 @@ class ReviewContributionRequest(BaseModel):
 
 class ContributionSummary(BaseModel):
     contribution_id: str
-    gesture_name: Optional[str]
-    meaning: Optional[str]
-    sign_language: Optional[str]
-    category: Optional[str]
-    gesture_type: Optional[str]
+    country: Optional[str] = "India"
+    region: Optional[str] = None
+    state: Optional[str] = None
+    district_city: Optional[str] = None
+    sign_language_type: Optional[str] = None
+    variety_name: Optional[str] = None
+    sign_language: Optional[str] = None
+    gesture_name: Optional[str] = None
+    meaning: Optional[str] = None
+    category: Optional[str] = None
+    gesture_type: Optional[str] = None
     video_duration_seconds: float
     usable_frame_count: int
     status: str
@@ -120,4 +149,3 @@ class ContributionSummary(BaseModel):
 class ContributionListResponse(BaseModel):
     count: int
     contributions: List[ContributionSummary]
-

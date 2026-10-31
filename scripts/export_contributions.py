@@ -33,26 +33,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--contributions-dir",
         type=str,
-        default="data/contributions",
+        default="data/contributions/india",
         help="Path to contributions root directory (containing approved/)",
     )
     parser.add_argument(
         "--dest-raw",
         type=str,
-        default="data/contributions/dataset",
+        default="data/contributions/india/dataset",
         help="Destination directory for class image folders (<dest>/<GESTURE>/)",
     )
     parser.add_argument(
         "--splits-dir",
         type=str,
-        default="data/splits/contributions",
+        default="data/splits/contributions/india",
         help="Output directory for train.csv, validation.csv, test.csv",
     )
     parser.add_argument(
         "--manifest-out",
         type=str,
-        default="data/contributions/sequence_manifest.json",
+        default="data/contributions/india/sequence_manifest.json",
         help="Path for sequential model JSON manifest",
+    )
+    parser.add_argument(
+        "--preserve-regional-folders",
+        action="store_true",
+        help="Organize image folders hierarchically by region and state (<dest>/<region>/<state>/<gesture>/)",
+    )
+    parser.add_argument(
+        "--no-stratify-variety",
+        action="store_true",
+        help="Merge identical gesture names across different varieties instead of stratifying separately",
     )
     parser.add_argument(
         "--split-ratios",
@@ -134,13 +144,16 @@ def main() -> int:
     print(f"Total active frames across approved contributions: {total_active_frames}")
 
     # 1. Group-based split
+    stratify_by_variety = not getattr(args, "no_stratify_variety", False)
     splitter = GroupedContributionSplitter(
         train_ratio=args.split_ratios[0],
         val_ratio=args.split_ratios[1],
         test_ratio=args.split_ratios[2],
         seed=args.seed,
     )
-    splits = splitter.split_samples(samples)
+    splits = splitter.split_samples(
+        samples, stratify_by_variety=stratify_by_variety
+    )
 
     for s_name, s_list in splits.items():
         n_frames = sum(len(x.active_frames) for x in s_list)
@@ -151,6 +164,7 @@ def main() -> int:
         samples=samples,
         dest_root=args.dest_raw,
         use_thumbnails=args.use_thumbnails,
+        preserve_regional_folders=getattr(args, "preserve_regional_folders", False),
     )
     print(f"Exported images to {args.dest_raw}: {counts}")
 

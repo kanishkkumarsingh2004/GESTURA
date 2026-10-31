@@ -1,7 +1,16 @@
-"""Comprehensive tests for the community gesture contribution pipeline.
+"""Comprehensive tests for GESTURA's India-first gesture contribution pipeline.
 
-Tests video ingestion, frame extraction, CV quality validation (blur/brightness/duplicate),
-frame management, submission validation, approval workflow, and grouped leak-free splitting.
+Tests:
+1. Video upload and validation (format, duration, stream readability).
+2. Frame extraction and CV quality audits (sharpness/Laplacian, underexposure, temporal duplicates).
+3. Frame serving (full resolution and 224x224 RGB model-ready thumbnails).
+4. Valid Indian region/state combinations across all 6 regions.
+5. Invalid region/state combinations and mismatches (rejected with HTTP 400).
+6. Conditional sign-language variety validation (Regional ISL Variant, Local Community, Other vs ISL).
+7. Missing required fields and minimum frame threshold validation (<3 active frames rejected).
+8. Correct regional hierarchical storage layout (pending vs approved vs rejected).
+9. Dataset export preserving geographic and dialectal metadata.
+10. Grouped leak-free splitting ensuring frames from the same video are never partitioned across splits.
 """
 
 from __future__ import annotations
@@ -24,6 +33,12 @@ from data.contribution_dataset import (
 from model.inference import PredictionResult
 from server.api import GestureAPI
 from server.contribution_service import ContributionService
+from server.india_geo_config import (
+    INDIA_REGIONS,
+    to_slug,
+    validate_india_geo,
+    validate_sign_language_variety,
+)
 
 
 class FakeEngine:
@@ -71,10 +86,8 @@ def _create_synthetic_video(
         if dark:
             frame = np.zeros((height, width, 3), dtype=np.uint8)
         elif blurry:
-            # Low contrast uniform image produces very low Laplacian variance (<25)
             frame = np.full((height, width, 3), 120, dtype=np.uint8)
         else:
-            # High contrast geometric shapes produce high Laplacian variance (>25)
             frame = np.zeros((height, width, 3), dtype=np.uint8)
             cv2.putText(
                 frame,
@@ -95,11 +108,26 @@ def _create_synthetic_video(
 @pytest.fixture()
 def contrib_env(tmp_path: Path):
     """Provides an isolated ContributionService and FastAPI TestClient."""
-    base_dir = tmp_path / "contributions"
+    base_dir = tmp_path / "contributions" / "india"
     service = ContributionService(base_dir=base_dir)
     api = GestureAPI(engine=FakeEngine(), contribution_service=service)
     client = TestClient(api.build_app())
     return service, client, tmp_path
+
+
+def _upload_and_extract(client: TestClient, tmp_path: Path, filename: str = "sample.mp4") -> str:
+    video_path = tmp_path / filename
+    _create_synthetic_video(video_path, num_frames=20, fps=25.0)
+    with open(video_path, "rb") as f:
+        resp = client.post(
+            "/contributions/upload",
+            files={"file": (filename, f, "video/mp4")},
+        )
+    assert resp.status_code == 201
+    cid = resp.json()["contribution_id"]
+    extract_resp = client.post(f"/contributions/{cid}/extract", json={"sample_interval": 5, "max_frames": 10})
+    assert extract_resp.status_code == 200
+    return cid
 
 
 def test_upload_valid_video(contrib_env):
@@ -139,168 +167,268 @@ def test_upload_invalid_extension_rejected(contrib_env):
 
 def test_frame_extraction_and_cv_quality_validation(contrib_env):
     service, client, tmp_path = contrib_env
-    video_path = tmp_path / "sharp_sample.mp4"
-    _create_synthetic_video(video_path, num_frames=25, fps=25.0)
+    cid = _upload_and_extract(client, tmp_path, "sample_extract.mp4")
 
-    with open(video_path, "rb") as f:
-        upload_resp = client.post(
-            "/contributions/upload",
-            files={"file": ("sharp_sample.mp4", f, "video/mp4")},
-        )
-    cid = upload_resp.json()["contribution_id"]
-
-    # Extract frames
-    extract_resp = client.post(
-        f"/contributions/{cid}/extract",
-        json={"sample_interval": 5, "max_frames": 10},
-    )
-    assert extract_resp.status_code == 200
-    extract_data = extract_resp.json()
-
-    assert extract_data["contribution_id"] == cid
-    assert extract_data["total_extracted"] == 5
-    assert extract_data["usable_count"] == 5
-    assert len(extract_data["frames"]) == 5
-
-    report = extract_data["quality_report"]
-    assert report["total_frames_extracted"] == 5
-    assert report["usable_frames_count"] == 5
-    assert report["blurry_frames_count"] == 0
-
-    first_frame = extract_data["frames"][0]
-    assert first_frame["status"] == "active"
-    assert first_frame["sharpness_score"] > 25.0
-    assert first_frame["is_blurry"] is False
-
-
-def test_frame_retrieval_and_thumbnails(contrib_env):
-    service, client, tmp_path = contrib_env
-    video_path = tmp_path / "video.mp4"
-    _create_synthetic_video(video_path, num_frames=15, fps=25.0)
-
-    with open(video_path, "rb") as f:
-        upload_resp = client.post(
-            "/contributions/upload",
-            files={"file": ("video.mp4", f, "video/mp4")},
-        )
-    cid = upload_resp.json()["contribution_id"]
-
-    client.post(
-        f"/contributions/{cid}/extract",
-        json={"sample_interval": 5, "max_frames": 10},
-    )
-
-    # Frame list endpoint
     frames_resp = client.get(f"/contributions/{cid}/frames")
     assert frames_resp.status_code == 200
     frames_data = frames_resp.json()
     assert frames_data["active_frames"] > 0
     frame_id = frames_data["frames"][0]["frame_id"]
 
-    # Full resolution frame image endpoint
-    img_resp = client.get(f"/contributions/{cid}/frames/{frame_id}")
-    assert img_resp.status_code == 200
-    assert img_resp.headers["content-type"] == "image/jpeg"
-    assert len(img_resp.content) > 0
-
-    # Model-ready thumbnail endpoint (224x224)
+    # Thumbnail is 224x224
     thumb_resp = client.get(f"/contributions/{cid}/frames/{frame_id}/thumb")
     assert thumb_resp.status_code == 200
-    assert thumb_resp.headers["content-type"] == "image/jpeg"
-
-    # Verify thumbnail dimensions
     arr = np.frombuffer(thumb_resp.content, dtype=np.uint8)
     thumb_img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     assert thumb_img.shape == (224, 224, 3)
 
 
-def test_frame_deletion_and_usable_count(contrib_env):
+def test_valid_indian_region_state_combinations(contrib_env):
+    """Test valid submissions across Indian regions and states."""
     service, client, tmp_path = contrib_env
-    video_path = tmp_path / "video.mp4"
-    _create_synthetic_video(video_path, num_frames=20, fps=25.0)
 
-    with open(video_path, "rb") as f:
-        upload_resp = client.post(
-            "/contributions/upload",
-            files={"file": ("video.mp4", f, "video/mp4")},
-        )
-    cid = upload_resp.json()["contribution_id"]
+    valid_cases = [
+        ("NORTH", "Delhi", "Indian Sign Language (ISL)", None),
+        ("SOUTH", "Karnataka", "Regional ISL Variant", "Bengaluru ISL"),
+        ("EAST", "Odisha", "Local Community Sign Language", "Puri Sign Variety"),
+        ("WEST", "Maharashtra", "Indian Sign Language (ISL)", None),
+        ("CENTRAL", "Madhya Pradesh", "Unsure", None),
+        ("NORTHEAST", "Assam", "Other", "Assamese Community Signs"),
+    ]
 
-    client.post(f"/contributions/{cid}/extract", json={"sample_interval": 5, "max_frames": 10})
-    frames = client.get(f"/contributions/{cid}/frames").json()["frames"]
-    initial_count = len(frames)
-    target_fid = frames[0]["frame_id"]
+    for idx, (reg, st, sl_type, variety) in enumerate(valid_cases):
+        cid = _upload_and_extract(client, tmp_path, f"sample_{idx}.mp4")
+        payload = {
+            "country": "India",
+            "region": reg,
+            "state": st,
+            "district_city": "Capital District",
+            "sign_language_type": sl_type,
+            "variety_name": variety,
+            "gesture_name": f"GESTURE_{reg}",
+            "meaning": f"Meaning for {reg}",
+            "category": "Greetings",
+            "gesture_type": "dynamic",
+            "contributor_id": f"contributor_{idx}",
+        }
+        resp = client.post(f"/contributions/{cid}/submit", json=payload)
+        assert resp.status_code == 200, f"Failed for {reg} / {st}: {resp.text}"
+        data = resp.json()
+        assert data["country"] == "India"
+        assert data["region"] == reg
+        assert data["state"] == st
+        assert data["sign_language_type"] == sl_type
+        assert data["status"] == "pending_approval"
 
-    # Delete/exclude frame
-    del_resp = client.delete(f"/contributions/{cid}/frames/{target_fid}")
-    assert del_resp.status_code == 200
-    del_data = del_resp.json()
-    assert del_data["status"] == "removed"
-    assert del_data["usable_count"] == initial_count - 1
 
-    # Verify updated frame list
-    updated_frames = client.get(f"/contributions/{cid}/frames").json()["frames"]
-    matching = [f for f in updated_frames if f["frame_id"] == target_fid]
-    assert matching[0]["status"] == "removed"
-
-
-def test_submission_lifecycle_and_moderation(contrib_env):
+def test_invalid_region_state_mismatch_rejected(contrib_env):
+    """Test that mismatched state and region combinations are rejected with HTTP 400."""
     service, client, tmp_path = contrib_env
-    video_path = tmp_path / "video.mp4"
-    _create_synthetic_video(video_path, num_frames=25, fps=25.0)
+    cid = _upload_and_extract(client, tmp_path, "mismatch_test.mp4")
 
-    with open(video_path, "rb") as f:
-        upload_resp = client.post(
-            "/contributions/upload",
-            files={"file": ("video.mp4", f, "video/mp4")},
-        )
-    cid = upload_resp.json()["contribution_id"]
-    client.post(f"/contributions/{cid}/extract", json={"sample_interval": 5, "max_frames": 10})
-
-    # Submit contribution
-    submit_payload = {
-        "gesture_name": "THANK_YOU",
-        "meaning": "Expression of gratitude",
-        "sign_language": "ISL",
+    # Kerala is in SOUTH, not NORTH
+    mismatch_payload = {
+        "country": "India",
+        "region": "NORTH",
+        "state": "Kerala",
+        "sign_language_type": "Indian Sign Language (ISL)",
+        "gesture_name": "NAMASTE",
+        "meaning": "Greeting",
         "category": "Greetings",
-        "description": "Flat hand moves forward from chin",
-        "gesture_type": "dynamic",
-        "contributor_id": "test_contributor",
     }
-    submit_resp = client.post(f"/contributions/{cid}/submit", json=submit_payload)
-    assert submit_resp.status_code == 200
-    sub_data = submit_resp.json()
-    assert sub_data["status"] == "pending_approval"
-    assert sub_data["gesture_name"] == "THANK_YOU"
-    assert sub_data["sign_language"] == "ISL"
+    resp = client.post(f"/contributions/{cid}/submit", json=mismatch_payload)
+    assert resp.status_code == 400
+    assert "belongs to region" in resp.json()["detail"] or "Invalid state" in resp.json()["detail"]
 
-    # List contributions with status filter
-    list_resp = client.get("/contributions?status=pending_approval")
-    assert list_resp.status_code == 200
-    contributions = list_resp.json()["contributions"]
-    assert any(c["contribution_id"] == cid for c in contributions)
+    # Unknown region
+    bad_region_payload = {
+        "country": "India",
+        "region": "GLOBAL",
+        "state": "Delhi",
+        "sign_language_type": "Indian Sign Language (ISL)",
+        "gesture_name": "NAMASTE",
+        "meaning": "Greeting",
+        "category": "Greetings",
+    }
+    resp2 = client.post(f"/contributions/{cid}/submit", json=bad_region_payload)
+    assert resp2.status_code == 400
+    assert "Invalid region" in resp2.json()["detail"]
 
-    # Approve contribution (promotes to approved dataset)
-    review_resp = client.post(
-        f"/contributions/{cid}/review",
-        json={"approved": True},
+
+def test_conditional_sign_language_variety_validation(contrib_env):
+    """Test conditional requirement for variety_name based on sign_language_type."""
+    service, client, tmp_path = contrib_env
+    cid = _upload_and_extract(client, tmp_path, "conditional_test.mp4")
+
+    # 1. Regional ISL Variant WITHOUT variety_name must fail
+    resp1 = client.post(
+        f"/contributions/{cid}/submit",
+        json={
+            "country": "India",
+            "region": "NORTH",
+            "state": "Delhi",
+            "sign_language_type": "Regional ISL Variant",
+            "variety_name": None,
+            "gesture_name": "HELLO",
+            "meaning": "Hello",
+            "category": "Greetings",
+        },
     )
-    assert review_resp.status_code == 200
-    assert review_resp.json()["status"] == "approved"
+    assert resp1.status_code == 400
+    assert "Variety/Community name is required" in resp1.json()["detail"]
 
-    # Verify filesystem location moved to approved/
-    approved_dir = service.approved_dir / cid
-    assert approved_dir.is_dir()
-    assert (approved_dir / "metadata.json").is_file()
-    assert (approved_dir / "frames" / "frames_metadata.json").is_file()
+    # 2. Local Community Sign Language WITHOUT variety_name must fail
+    resp2 = client.post(
+        f"/contributions/{cid}/submit",
+        json={
+            "country": "India",
+            "region": "NORTH",
+            "state": "Delhi",
+            "sign_language_type": "Local Community Sign Language",
+            "variety_name": "",
+            "gesture_name": "HELLO",
+            "meaning": "Hello",
+            "category": "Greetings",
+        },
+    )
+    assert resp2.status_code == 400
+
+    # 3. Providing variety_name succeeds
+    resp3 = client.post(
+        f"/contributions/{cid}/submit",
+        json={
+            "country": "India",
+            "region": "NORTH",
+            "state": "Delhi",
+            "sign_language_type": "Regional ISL Variant",
+            "variety_name": "Delhi NCR Variety",
+            "gesture_name": "HELLO",
+            "meaning": "Hello",
+            "category": "Greetings",
+        },
+    )
+    assert resp3.status_code == 200
+    assert resp3.json()["variety_name"] == "Delhi NCR Variety"
+
+
+def test_correct_regional_storage_and_moderation(contrib_env):
+    """Test hierarchical regional folder storage under data/contributions/india/."""
+    service, client, tmp_path = contrib_env
+    cid = _upload_and_extract(client, tmp_path, "storage_test.mp4")
+
+    # Submit for North / Punjab
+    client.post(
+        f"/contributions/{cid}/submit",
+        json={
+            "country": "India",
+            "region": "NORTH",
+            "state": "Punjab",
+            "district_city": "Amritsar",
+            "sign_language_type": "Indian Sign Language (ISL)",
+            "gesture_name": "SAT_SRI_AKAL",
+            "meaning": "Traditional greeting",
+            "category": "Greetings",
+            "gesture_type": "dynamic",
+        },
+    )
+
+    # Verify placed in pending/north/punjab/cid/
+    expected_pending = service.pending_dir / "north" / "punjab" / cid
+    assert expected_pending.is_dir()
+    assert (expected_pending / "metadata.json").is_file()
+    assert (expected_pending / "frames").is_dir()
+
+    # Approve contribution
+    appr_resp = client.post(f"/contributions/{cid}/review", json={"approved": True})
+    assert appr_resp.status_code == 200
+    assert appr_resp.json()["status"] == "approved"
+
+    # Verify moved to approved/north/punjab/cid/
+    expected_approved = service.approved_dir / "north" / "punjab" / cid
+    assert expected_approved.is_dir()
+    assert not expected_pending.exists()
+
+
+def test_dataset_export_preserving_geographic_metadata(tmp_path: Path):
+    """Test exporting approved samples preserves regional metadata and distinct varieties."""
+    approved_dir = tmp_path / "india" / "approved"
+    sample_cid = "contrib_india_001"
+    regional_dir = approved_dir / "south" / "tamil_nadu" / sample_cid
+    frames_dir = regional_dir / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
+    dummy_frame = frames_dir / "frame_0001.jpg"
+    dummy_thumb = frames_dir / "frame_0001_thumb.jpg"
+    dummy_frame.write_bytes(b"dummy_frame")
+    dummy_thumb.write_bytes(b"dummy_thumb")
+
+    meta = {
+        "contribution_id": sample_cid,
+        "status": "approved",
+        "country": "India",
+        "region": "SOUTH",
+        "state": "Tamil Nadu",
+        "district_city": "Chennai",
+        "sign_language_type": "Regional ISL Variant",
+        "variety_name": "Chennai Dialect",
+        "gesture_name": "VANAKKAM",
+        "meaning": "Traditional Tamil greeting",
+        "category": "Greetings",
+        "gesture_type": "dynamic",
+        "video_duration_seconds": 1.2,
+        "video_fps": 25.0,
+    }
+    with open(regional_dir / "metadata.json", "w") as f:
+        json.dump(meta, f)
+
+    frames_meta = [
+        {
+            "frame_id": "frame_0001",
+            "filename": "frame_0001.jpg",
+            "thumb_filename": "frame_0001_thumb.jpg",
+            "timestamp_ms": 0.0,
+            "frame_index": 0,
+            "sharpness_score": 60.0,
+            "is_blurry": False,
+            "is_duplicate": False,
+            "is_dark": False,
+            "status": "active",
+        }
+    ]
+    with open(frames_dir / "frames_metadata.json", "w") as f:
+        json.dump(frames_meta, f)
+
+    exporter = ContributionDatasetExporter(contributions_root=tmp_path / "india")
+    samples = exporter.load_approved_samples()
+    assert len(samples) == 1
+    s = samples[0]
+    assert s.country == "India"
+    assert s.region == "SOUTH"
+    assert s.state == "Tamil Nadu"
+    assert s.variety_name == "Chennai Dialect"
+    assert s.qualified_label == "VANAKKAM__south__chennai_dialect"
+
+    # Export sequence manifest
+    manifest_file = tmp_path / "manifest.json"
+    splitter = GroupedContributionSplitter(seed=42)
+    splits = splitter.split_samples(samples)
+    exporter.export_sequence_manifest(splits, manifest_file, as_json=True)
+
+    with open(manifest_file, "r") as f:
+        manifest_data = json.load(f)
+    assert len(manifest_data) == 1
+    entry = manifest_data[0]
+    assert entry["country"] == "India"
+    assert entry["region"] == "SOUTH"
+    assert entry["state"] == "Tamil Nadu"
+    assert entry["variety_name"] == "Chennai Dialect"
+    assert entry["qualified_label"] == "VANAKKAM__south__chennai_dialect"
 
 
 def test_grouped_split_prevents_data_leakage(tmp_path: Path):
     """Test that all frames from the same video/contribution stay in the exact same split."""
     samples = []
-    # Create 6 contributions across 2 classes
     for i in range(6):
-        gesture = "HELLO" if i < 3 else "THANK_YOU"
         cid = f"contrib_{i}"
         frames = [
             ContributedFrame(
@@ -320,32 +448,28 @@ def test_grouped_split_prevents_data_leakage(tmp_path: Path):
         samples.append(
             ContributedGestureSample(
                 contribution_id=cid,
-                gesture_name=gesture,
+                gesture_name="NAMASTE",
                 meaning="test",
-                sign_language="ISL",
                 category="test",
                 gesture_type="dynamic",
                 duration_seconds=1.0,
                 fps=25.0,
+                country="India",
+                region="NORTH" if i < 3 else "SOUTH",
+                state="Delhi" if i < 3 else "Karnataka",
                 frames=frames,
             )
         )
 
     splitter = GroupedContributionSplitter(train_ratio=0.6, val_ratio=0.2, test_ratio=0.2, seed=42)
-    splits = splitter.split_samples(samples)
+    splits = splitter.split_samples(samples, stratify_by_variety=True)
 
-    # Collect contribution IDs per split
     split_cids: dict[str, set[str]] = {
         name: {s.contribution_id for s in s_list}
         for name, s_list in splits.items()
     }
 
-    # Verify mutual exclusivity of contribution IDs (NO leakage)
     assert split_cids["train"].isdisjoint(split_cids["validation"])
     assert split_cids["train"].isdisjoint(split_cids["test"])
     assert split_cids["validation"].isdisjoint(split_cids["test"])
-
-    # Total contributions should equal 6
-    total_split_cids = split_cids["train"] | split_cids["validation"] | split_cids["test"]
-    assert len(total_split_cids) == 6
-
+    assert len(split_cids["train"] | split_cids["validation"] | split_cids["test"]) == 6

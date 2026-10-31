@@ -513,9 +513,10 @@ class GestureAPI:
         @app.get("/contributions", response_model=ContributionListResponse)
         def list_contributions(
             status: Optional[str] = Query(None),
+            region: Optional[str] = Query(None),
         ) -> ContributionListResponse:
             items = self.contribution_service.list_contributions(
-                status_filter=status
+                status_filter=status, region_filter=region
             )
             return ContributionListResponse(
                 count=len(items), contributions=items

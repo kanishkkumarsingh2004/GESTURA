@@ -375,6 +375,12 @@ export type ContributionMetadata = {
   video_fps: number;
   video_resolution: [number, number];
   total_video_frames: number;
+  country?: string;
+  region?: string | null;
+  state?: string | null;
+  district_city?: string | null;
+  sign_language_type?: string | null;
+  variety_name?: string | null;
   gesture_name?: string | null;
   meaning?: string | null;
   sign_language?: string | null;
@@ -417,17 +423,29 @@ export type FrameListResponse = {
 };
 
 export type SubmitContributionRequest = {
+  country?: string;
+  region: string;
+  state: string;
+  district_city?: string | null;
+  sign_language_type: string;
+  variety_name?: string | null;
   gesture_name: string;
   meaning: string;
-  sign_language: string;
   category: string;
   description?: string | null;
   gesture_type?: "static" | "dynamic" | "unknown";
   contributor_id?: string | null;
+  sign_language?: string | null;
 };
 
 export type ContributionSummary = {
   contribution_id: string;
+  country?: string | null;
+  region?: string | null;
+  state?: string | null;
+  district_city?: string | null;
+  sign_language_type?: string | null;
+  variety_name?: string | null;
   gesture_name?: string | null;
   meaning?: string | null;
   sign_language?: string | null;
@@ -552,9 +570,13 @@ export async function submitContribution(
 }
 
 export async function listContributions(
-  status?: string
+  status?: string,
+  region?: string
 ): Promise<ContributionListResponse> {
-  const query = status ? `?status=${encodeURIComponent(status)}` : "";
+  const params = new URLSearchParams();
+  if (status && status !== "all") params.append("status", status);
+  if (region && region !== "all") params.append("region", region);
+  const query = params.toString() ? `?${params.toString()}` : "";
   return request<ContributionListResponse>(`/contributions${query}`);
 }
 

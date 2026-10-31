@@ -1,4 +1,4 @@
-"""Video processing, frame extraction, quality validation and dataset organization service."""
+"""Video processing, frame extraction, quality validation and India-first dataset organization service."""
 
 from __future__ import annotations
 
@@ -23,6 +23,12 @@ from server.contribution_models import (
     QualityReport,
     SubmitContributionRequest,
 )
+from server.india_geo_config import (
+    COUNTRY_NAME,
+    to_slug,
+    validate_india_geo,
+    validate_sign_language_variety,
+)
 from utils.logging import get_logger
 
 logger = get_logger("contributions", log_file="outputs/logs/contributions.log")
@@ -36,15 +42,27 @@ ID_PATTERN = re.compile(r"^[a-zA-Z0-9_\-]+$")
 
 
 class ContributionService:
-    """Manages the full contribution lifecycle from upload to approved dataset."""
+    """Manages the full contribution lifecycle for the India-first dataset strategy.
 
-    def __init__(self, base_dir: Path | str = "data/contributions") -> None:
+    Storage Layout:
+      data/contributions/india/
+        pending/
+          _drafts/<cid>/                     (temporary staging prior to annotation)
+          <region_slug>/<state_slug>/<cid>/  (annotated pending approval)
+        approved/
+          <region_slug>/<state_slug>/<cid>/  (reviewed and approved for training)
+        rejected/
+          <region_slug>/<state_slug>/<cid>/  (rejected samples with reasons)
+    """
+
+    def __init__(self, base_dir: Path | str = "data/contributions/india") -> None:
         self.base_dir = Path(base_dir).resolve()
         self.pending_dir = self.base_dir / "pending"
         self.approved_dir = self.base_dir / "approved"
         self.rejected_dir = self.base_dir / "rejected"
 
         self.pending_dir.mkdir(parents=True, exist_ok=True)
+        (self.pending_dir / "_drafts").mkdir(parents=True, exist_ok=True)
         self.approved_dir.mkdir(parents=True, exist_ok=True)
         self.rejected_dir.mkdir(parents=True, exist_ok=True)
 
@@ -58,16 +76,29 @@ class ContributionService:
         return contribution_id
 
     def _get_contribution_dir(self, contribution_id: str) -> Tuple[Path, str]:
-        """Locate contribution directory across pending, approved, or rejected."""
+        """Locate contribution directory across pending, approved, or rejected hierarchies."""
         cid = self._validate_id(contribution_id)
         for state_dir, state_name in [
             (self.pending_dir, "pending"),
             (self.approved_dir, "approved"),
             (self.rejected_dir, "rejected"),
         ]:
+            if not state_dir.is_dir():
+                continue
+
+            # Check direct or draft location
             candidate = state_dir / cid
             if candidate.is_dir() and (candidate / "metadata.json").is_file():
                 return candidate, state_name
+
+            draft_candidate = state_dir / "_drafts" / cid
+            if draft_candidate.is_dir() and (draft_candidate / "metadata.json").is_file():
+                return draft_candidate, state_name
+
+            # Check regional hierarchies: region_slug/state_slug/cid
+            for candidate in state_dir.glob(f"*/*/{cid}"):
+                if candidate.is_dir() and (candidate / "metadata.json").is_file():
+                    return candidate, state_name
 
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -114,7 +145,7 @@ class ContributionService:
 
         # Generate unique contribution ID
         cid = f"contrib_{int(time.time())}_{uuid.uuid4().hex[:6]}"
-        contrib_dir = self.pending_dir / cid
+        contrib_dir = self.pending_dir / "_drafts" / cid
         contrib_dir.mkdir(parents=True, exist_ok=True)
         frames_dir = contrib_dir / "frames"
         frames_dir.mkdir(parents=True, exist_ok=True)
@@ -177,8 +208,9 @@ class ContributionService:
             video_fps=round(fps, 2),
             video_resolution=[width, height],
             total_video_frames=total_frames,
-            sample_interval=max(1, int(fps // 5)),  # default approx 5 samples per second
+            sample_interval=max(1, int(fps // 5)),
             usable_frame_count=0,
+            country=COUNTRY_NAME,
             created_at=now,
             updated_at=now,
         )
@@ -245,7 +277,7 @@ class ContributionService:
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
                 # 1. Sharpness via Laplacian variance
-                laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+                laplacian_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
                 is_blurry = laplacian_var < 25.0
                 if is_blurry:
                     blurry_count += 1
@@ -259,8 +291,7 @@ class ContributionService:
                 # 3. Duplicate check against previous extracted frame
                 is_duplicate = False
                 if prev_gray is not None:
-                    # Normalized mean absolute difference
-                    diff = np.mean(np.abs(gray.astype(np.float32) - prev_gray.astype(np.float32))) / 255.0
+                    diff = float(np.mean(np.abs(gray.astype(np.float32) - prev_gray.astype(np.float32))) / 255.0)
                     if diff < 0.02:  # Less than 2% visual variation
                         is_duplicate = True
                         duplicate_count += 1
@@ -300,9 +331,8 @@ class ContributionService:
         if extracted_count == 0:
             raise HTTPException(status_code=400, detail="No frames could be extracted from video")
 
-        # Compile warnings
         if blurry_count > extracted_count * 0.4:
-            warnings.append(f"High blur detected ({blurry_count}/{extracted_count} frames are below sharpness threshold).")
+            warnings.append(f"High blur detected ({blurry_count}/{extracted_count} frames below sharpness threshold).")
         if dark_count > 0:
             warnings.append(f"{dark_count} dark or underexposed frame(s) identified.")
         if duplicate_count > extracted_count * 0.5:
@@ -319,7 +349,6 @@ class ContributionService:
             warnings=warnings,
         )
 
-        # Update metadata
         meta["sample_interval"] = sample_interval
         meta["usable_frame_count"] = usable_count
         meta["status"] = "extracted"
@@ -382,11 +411,9 @@ class ContributionService:
         if not target:
             raise HTTPException(status_code=404, detail="Frame not found")
 
-        # Mark removed
         target["status"] = "removed"
         self._write_frames_metadata(contrib_dir, frames)
 
-        # Update usable count in metadata
         meta = self._read_metadata(contrib_dir)
         usable = sum(1 for item in frames if item["status"] == "active")
         meta["usable_frame_count"] = usable
@@ -395,9 +422,9 @@ class ContributionService:
 
         return {"contribution_id": contribution_id, "frame_id": fid, "status": "removed", "usable_count": usable}
 
-    # ------------------------------------------------------------------ Submit
+    # ------------------------------------------------------------------ Submit (India-First)
     def submit_contribution(self, contribution_id: str, req: SubmitContributionRequest) -> ContributionMetadata:
-        """Finalize submission with gesture semantics and mark for moderation."""
+        """Finalize submission with India-specific geographic and linguistic semantics."""
         contrib_dir, state = self._get_contribution_dir(contribution_id)
         if state != "pending":
             raise HTTPException(
@@ -415,12 +442,37 @@ class ContributionService:
                 detail=f"At least 3 valid active frames are required for submission (currently {active_count})",
             )
 
-        # Normalize gesture name to uppercase snake_case
-        clean_name = re.sub(r"[^A-Za-z0-9_]+", "_", req.gesture_name.strip()).upper()
+        # 1. Validate geographic hierarchy (Country fixed to India, Region -> State)
+        try:
+            canonical_region, canonical_state = validate_india_geo(req.region, req.state)
+        except ValueError as err:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err))
 
+        # 2. Validate sign language classification & variety
+        try:
+            clean_sl_type, clean_variety = validate_sign_language_variety(
+                req.sign_language_type, req.variety_name
+            )
+        except ValueError as err:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err))
+
+        clean_name = re.sub(r"[^A-Za-z0-9_]+", "_", req.gesture_name.strip()).upper()
+        if not clean_name:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Gesture name cannot be empty")
+
+        cid = meta["contribution_id"]
+
+        meta["country"] = COUNTRY_NAME
+        meta["region"] = canonical_region
+        meta["state"] = canonical_state
+        meta["district_city"] = req.district_city.strip() if req.district_city else None
+        meta["sign_language_type"] = clean_sl_type
+        meta["variety_name"] = clean_variety
+        meta["sign_language"] = (
+            f"ISL ({clean_variety})" if clean_variety else clean_sl_type
+        )
         meta["gesture_name"] = clean_name
         meta["meaning"] = req.meaning.strip()
-        meta["sign_language"] = req.sign_language.strip()
         meta["category"] = req.category.strip()
         meta["description"] = req.description.strip() if req.description else None
         meta["gesture_type"] = req.gesture_type
@@ -429,8 +481,28 @@ class ContributionService:
         meta["status"] = "pending_approval"
         meta["updated_at"] = time.time()
 
+        # Place into canonical regional storage: data/contributions/india/pending/{region}/{state}/{cid}
+        region_slug = to_slug(canonical_region)
+        state_slug = to_slug(canonical_state)
+        target_dir = self.pending_dir / region_slug / state_slug / cid
+        target_dir.parent.mkdir(parents=True, exist_ok=True)
+
         self._write_metadata(contrib_dir, meta)
-        logger.info("Contribution %s submitted for approval: %s (%s)", contribution_id, clean_name, req.sign_language)
+
+        if contrib_dir.resolve() != target_dir.resolve():
+            if target_dir.exists():
+                shutil.rmtree(target_dir)
+            shutil.move(str(contrib_dir), str(target_dir))
+            contrib_dir = target_dir
+
+        logger.info(
+            "Contribution %s submitted for approval: %s [%s / %s - %s]",
+            cid,
+            clean_name,
+            canonical_region,
+            canonical_state,
+            clean_sl_type,
+        )
         return ContributionMetadata(**meta)
 
     # ------------------------------------------------------------------ Query & Moderation
@@ -439,32 +511,47 @@ class ContributionService:
         meta = self._read_metadata(contrib_dir)
         return ContributionMetadata(**meta)
 
-    def list_contributions(self, status_filter: Optional[str] = None) -> list[ContributionSummary]:
+    def list_contributions(
+        self,
+        status_filter: Optional[str] = None,
+        region_filter: Optional[str] = None,
+    ) -> list[ContributionSummary]:
         results: list[ContributionSummary] = []
         for state_dir in [self.pending_dir, self.approved_dir, self.rejected_dir]:
-            for cdir in state_dir.iterdir():
-                if cdir.is_dir() and (cdir / "metadata.json").is_file():
-                    try:
-                        meta = self._read_metadata(cdir)
-                        st = meta.get("status", "unknown")
-                        if status_filter and st != status_filter:
-                            continue
-                        results.append(
-                            ContributionSummary(
-                                contribution_id=meta["contribution_id"],
-                                gesture_name=meta.get("gesture_name"),
-                                meaning=meta.get("meaning"),
-                                sign_language=meta.get("sign_language"),
-                                category=meta.get("category"),
-                                gesture_type=meta.get("gesture_type"),
-                                video_duration_seconds=meta.get("video_duration_seconds", 0.0),
-                                usable_frame_count=meta.get("usable_frame_count", 0),
-                                status=st,
-                                created_at=meta.get("created_at", 0.0),
-                            )
+            if not state_dir.is_dir():
+                continue
+            for meta_path in state_dir.rglob("metadata.json"):
+                try:
+                    with open(meta_path, "r", encoding="utf-8") as f:
+                        meta = json.load(f)
+                    st = meta.get("status", "unknown")
+                    if status_filter and st != status_filter:
+                        continue
+                    r = meta.get("region")
+                    if region_filter and r != region_filter:
+                        continue
+                    results.append(
+                        ContributionSummary(
+                            contribution_id=meta["contribution_id"],
+                            country=meta.get("country", COUNTRY_NAME),
+                            region=r,
+                            state=meta.get("state"),
+                            district_city=meta.get("district_city"),
+                            sign_language_type=meta.get("sign_language_type"),
+                            variety_name=meta.get("variety_name"),
+                            sign_language=meta.get("sign_language"),
+                            gesture_name=meta.get("gesture_name"),
+                            meaning=meta.get("meaning"),
+                            category=meta.get("category"),
+                            gesture_type=meta.get("gesture_type"),
+                            video_duration_seconds=meta.get("video_duration_seconds", 0.0),
+                            usable_frame_count=meta.get("usable_frame_count", 0),
+                            status=st,
+                            created_at=meta.get("created_at", 0.0),
                         )
-                    except Exception as err:
-                        logger.warning("Error reading contribution %s: %s", cdir.name, err)
+                    )
+                except Exception as err:
+                    logger.warning("Error reading contribution metadata %s: %s", meta_path, err)
 
         results.sort(key=lambda x: x.created_at, reverse=True)
         return results
@@ -475,31 +562,35 @@ class ContributionService:
         approved: bool,
         rejection_reason: Optional[str] = None,
     ) -> ContributionMetadata:
-        """Moderate a contribution: move to approved or rejected dataset storage."""
+        """Moderate a contribution: move to approved or rejected regional dataset storage."""
         contrib_dir, current_state = self._get_contribution_dir(contribution_id)
         meta = self._read_metadata(contrib_dir)
 
         cid = meta["contribution_id"]
         meta["updated_at"] = time.time()
 
+        region = meta.get("region") or "general"
+        state = meta.get("state") or "general"
+        region_slug = to_slug(region)
+        state_slug = to_slug(state)
+
         if approved:
             meta["status"] = "approved"
             meta["rejection_reason"] = None
-            dest_dir = self.approved_dir / cid
-            self._write_metadata(contrib_dir, meta)
-            if dest_dir.exists():
-                shutil.rmtree(dest_dir)
-            shutil.move(str(contrib_dir), str(dest_dir))
-            logger.info("Contribution %s APPROVED and promoted to approved dataset", cid)
-            return ContributionMetadata(**meta)
+            dest_dir = self.approved_dir / region_slug / state_slug / cid
         else:
             meta["status"] = "rejected"
             meta["rejection_reason"] = rejection_reason or "Does not meet dataset quality criteria"
-            dest_dir = self.rejected_dir / cid
-            self._write_metadata(contrib_dir, meta)
+            dest_dir = self.rejected_dir / region_slug / state_slug / cid
+
+        dest_dir.parent.mkdir(parents=True, exist_ok=True)
+        self._write_metadata(contrib_dir, meta)
+
+        if dest_dir.resolve() != contrib_dir.resolve():
             if dest_dir.exists():
                 shutil.rmtree(dest_dir)
             shutil.move(str(contrib_dir), str(dest_dir))
-            logger.info("Contribution %s REJECTED: %s", cid, meta["rejection_reason"])
-            return ContributionMetadata(**meta)
 
+        status_str = "APPROVED" if approved else "REJECTED"
+        logger.info("Contribution %s %s [Region: %s, State: %s]", cid, status_str, region, state)
+        return ContributionMetadata(**meta)
