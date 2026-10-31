@@ -21,7 +21,7 @@ def initialize_session_state() -> None:
         "model_loaded": False,
         "model_info": {},
         "camera_status": "disconnected",
-        "detection_enabled": False,
+        "detection_enabled": True,
         "audio_enabled": True,
         "current_gesture": None,
         "current_confidence": None,

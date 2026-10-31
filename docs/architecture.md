@@ -1210,7 +1210,9 @@ Do not assume that increasing Streamlit worker processes will automatically impr
 
 # 19. API and Module Contracts
 
-Although the initial implementation does not require a separate REST API, modules must communicate through explicit interfaces.
+Modules communicate through explicit interfaces. In addition to the in-process
+module contracts below, a FastAPI HTTP API (`server/api.py`, served with uvicorn)
+exposes gesture recognition to external frontends (e.g. a separate main website).
 
 | Module | Input | Output |
 |---|---|---|
@@ -1223,6 +1225,42 @@ Although the initial implementation does not require a separate REST API, module
 | Session manager | Session events | Session state |
 | Trainer | Dataset and config | Checkpoints and metrics |
 | Evaluator | Checkpoint and test data | Evaluation report |
+
+## 19.1 HTTP API (`server/api.py`)
+
+The API loads the PyTorch model once and shares it read-only across sessions.
+Per-session prediction stabilization, audio state, camera status and history are
+isolated by `session_id` (passed as a path segment or the `X-Session-Id` header).
+
+Key endpoints:
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/health` | Service health and model loaded status |
+| `GET` | `/model/info` | Model architecture, classes, input size, device |
+| `GET` | `/gestures` | Supported gesture vocabulary with text mapping |
+| `POST` | `/predict` | Upload an image; returns prediction + stabilization + audio |
+| `GET` | `/session/{id}/status` | Session detection/audio state and latest prediction |
+| `POST` | `/session/{id}/detection/start` | Start detection for a session |
+| `POST` | `/session/{id}/detection/stop` | Stop detection for a session |
+| `POST` | `/session/{id}/audio/enable` | Enable audio for a session |
+| `POST` | `/session/{id}/audio/disable` | Disable audio for a session |
+| `GET` | `/session/{id}/audio/status` | Audio enabled state and last announced gesture |
+| `GET` | `/session/{id}/history` | Session prediction history |
+| `DELETE` | `/session/{id}/history` | Clear session prediction history |
+| `POST` | `/session/{id}/reset` | Reset session stabilization/audio/history |
+| `DELETE` | `/session/{id}` | Remove a session and its resources |
+
+Run with:
+
+```bash
+uv run --active python scripts/run_api.py
+# or
+uv run uvicorn server.api:app --host 0.0.0.0 --port 8000
+```
+
+Camera frames are processed in memory and never persisted. Errors return
+structured responses without exposing internal stack traces.
 
 Use typed data structures for important boundaries.
 

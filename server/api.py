@@ -1,0 +1,409 @@
+"""FastAPI HTTP API exposing gesture recognition to external frontends.
+
+Provides REST endpoints for image-based prediction, model metadata, gesture
+vocabulary, and per-session detection/audio state. The PyTorch model is loaded
+once and shared (read-only) across sessions; per-session prediction
+stabilization and audio state are isolated. Camera frames are processed in
+memory and never persisted.
+"""
+
+from __future__ import annotations
+
+import threading
+from typing import Any, Optional
+from uuid import uuid4
+
+import cv2
+import numpy as np
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, status
+
+from model.inference import InferenceEngine, PredictionResult
+from server.api_models import (
+    AudioControlResponse,
+    AudioPlaybackInfo,
+    AudioStatusResponse,
+    DetectionControlResponse,
+    DetectionStatusResponse,
+    ErrorResponse,
+    GestureMapEntry,
+    GesturesResponse,
+    HealthResponse,
+    ModelInfoResponse,
+    PredictResponse,
+    StableEventInfo,
+)
+from server.audio_service import GESTURE_TEXT, AudioService
+from server.camera_server import CameraServer
+from server.prediction_service import PredictionService, StablePredictionEvent
+from server.session_manager import SessionState
+from utils.logging import get_app_logger
+from utils.preprocessing import (
+    PreprocessingError,
+    Preprocessor,
+    load_preprocessing_config,
+)
+
+logger = get_app_logger("api")
+
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+
+
+class _SessionScope:
+    """Per-session mutable state isolated from other sessions."""
+
+    __slots__ = (
+        "session_id",
+        "prediction_service",
+        "audio_service",
+        "camera_server",
+        "session_state",
+        "latest_confidence",
+    )
+
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+        self.prediction_service = PredictionService()
+        self.audio_service = AudioService()
+        self.camera_server = CameraServer()
+        self.session_state = SessionState()
+        self.latest_confidence: Optional[float] = None
+
+
+class GestureAPI:
+    """FastAPI application wrapping the gesture recognition services."""
+
+    def __init__(
+        self,
+        config_path: str = "config.yaml",
+        engine: Optional[InferenceEngine] = None,
+    ) -> None:
+        self.config_path = config_path
+        self.preprocessor = Preprocessor(load_preprocessing_config(config_path))
+        self.engine: InferenceEngine = engine or InferenceEngine(
+            config_path=config_path
+        )
+        self._engine_lock = threading.Lock()
+        self._sessions: dict[str, _SessionScope] = {}
+        self._sessions_lock = threading.Lock()
+
+    # ------------------------------------------------------------------ lifecycle
+    def ensure_model_loaded(self) -> None:
+        """Load the model once, lazily, on first request."""
+        if not self.engine._loaded:  # noqa: SLF001 - internal coordinator
+            try:
+                self.engine.load_model()
+            except Exception as exc:  # noqa: BLE001 - surface a clean 503
+                logger.error("Model load failed: %s", exc)
+                raise RuntimeError(f"Failed to load model: {exc}") from exc
+
+    # ---------------------------------------------------------------- sessions
+    def _resolve_session_id(
+        self, session_id: Optional[str], header: Optional[str]
+    ) -> str:
+        if session_id:
+            return session_id
+        if header:
+            return header
+        return str(uuid4())
+
+    def _get_or_create(self, session_id: str) -> _SessionScope:
+        with self._sessions_lock:
+            scope = self._sessions.get(session_id)
+            if scope is None:
+                scope = _SessionScope(session_id)
+                self._sessions[session_id] = scope
+            return scope
+
+    def _remove_session(self, session_id: str) -> None:
+        with self._sessions_lock:
+            self._sessions.pop(session_id, None)
+
+    # ------------------------------------------------------------- image input
+    @staticmethod
+    def _decode_image(data: bytes) -> np.ndarray:
+        if len(data) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"Image exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)} MB",
+            )
+        arr = np.frombuffer(data, dtype=np.uint8)
+        image = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if image is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Uploaded file is not a valid image",
+            )
+        return image
+
+    def _predict_frame(self, image_bgr: np.ndarray) -> PredictionResult:
+        """Preprocess and run inference on a single frame (thread-safe)."""
+        try:
+            tensor = self.preprocessor.preprocess(image_bgr)  # 1xCxHxW
+        except PreprocessingError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid frame: {exc}",
+            ) from exc
+        chw = tensor.squeeze(0).numpy().astype(np.float32)
+        with self._engine_lock:
+            result = self.engine.predict(chw)
+        return result
+
+    # ---------------------------------------------------------------- audio
+    def _audio_playback(self, scope: _SessionScope, gesture: str) -> AudioPlaybackInfo:
+        if not scope.audio_service.enabled:
+            return AudioPlaybackInfo(played=False, reason="audio_disabled")
+        text = GESTURE_TEXT.get(gesture.upper())
+        if text is None:
+            return AudioPlaybackInfo(
+                played=False, gesture=gesture, reason="unsupported_gesture"
+            )
+        request = scope.audio_service.request_playback(gesture)
+        if request is None:
+            return AudioPlaybackInfo(
+                played=False,
+                gesture=gesture,
+                text=text,
+                reason="duplicate_suppressed",
+            )
+        return AudioPlaybackInfo(
+            played=True, text=request.text, gesture=request.gesture
+        )
+
+    # ---------------------------------------------------------------- app
+    def build_app(self) -> FastAPI:
+        app = FastAPI(title="Gesture Recognition API", version="1.0.0")
+
+        @app.get("/health", response_model=HealthResponse)
+        def health() -> HealthResponse:
+            try:
+                self.ensure_model_loaded()
+            except RuntimeError:
+                return HealthResponse(status="degraded", model_loaded=False)
+            return HealthResponse(status="ok", model_loaded=True)
+
+        @app.get("/model/info", response_model=ModelInfoResponse)
+        def model_info() -> ModelInfoResponse:
+            try:
+                self.ensure_model_loaded()
+            except RuntimeError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=str(exc),
+                ) from exc
+            info = self.engine.get_model_info()
+            return ModelInfoResponse(**info)
+
+        @app.get("/gestures", response_model=GesturesResponse)
+        def gestures() -> GesturesResponse:
+            try:
+                self.ensure_model_loaded()
+            except RuntimeError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=str(exc),
+                ) from exc
+            info = self.engine.get_model_info()
+            class_names: list[str] = info.get("class_names", [])
+            entries: list[GestureMapEntry] = []
+            for idx, name in enumerate(class_names):
+                entries.append(
+                    GestureMapEntry(
+                        class_id=idx,
+                        class_name=name,
+                        text=GESTURE_TEXT.get(name.upper(), name),
+                    )
+                )
+            return GesturesResponse(classes=entries, count=len(entries))
+
+        @app.post(
+            "/predict",
+            response_model=PredictResponse,
+            responses={400: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+        )
+        async def predict(
+            image: UploadFile = File(...),
+            session_id: Optional[str] = Form(None),
+            x_session_id: Optional[str] = Header(None, alias="X-Session-Id"),
+        ) -> PredictResponse:
+            resolved_id = self._resolve_session_id(session_id, x_session_id)
+            scope = self._get_or_create(resolved_id)
+
+            try:
+                self.ensure_model_loaded()
+            except RuntimeError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=str(exc),
+                ) from exc
+
+            data = await image.read()
+            image_bgr = self._decode_image(data)
+
+            result = self._predict_frame(image_bgr)
+            scope.latest_confidence = result.confidence
+
+            # Run prediction stabilization for this session only.
+            event: Optional[StablePredictionEvent] = scope.prediction_service.update(
+                result
+            )
+            stable = event is not None
+
+            audio = AudioPlaybackInfo(played=False, reason="not_stable")
+            if stable and scope.session_state.detection_enabled:
+                scope.session_state.latest_prediction = result.class_name
+                scope.session_state.add_prediction(
+                    gesture=result.class_name,
+                    confidence=result.confidence,
+                    audio_played=False,
+                )
+                audio = self._audio_playback(scope, result.class_name)
+                if audio.played:
+                    # Mark the history entry's latest audio state.
+                    if scope.session_state.prediction_history:
+                        scope.session_state.prediction_history[-1]["audio_played"] = (
+                            True
+                        )
+
+            return PredictResponse(
+                session_id=resolved_id,
+                class_id=result.class_id,
+                class_name=result.class_name,
+                confidence=result.confidence,
+                probabilities=result.probabilities,
+                inference_time_ms=result.inference_time_ms,
+                detection_enabled=scope.session_state.detection_enabled,
+                audio_enabled=scope.session_state.audio_enabled,
+                stable=stable,
+                stable_event=(
+                    StableEventInfo(
+                        event_id=event.event_id,
+                        class_name=event.class_name,
+                        confidence=event.confidence,
+                        timestamp=event.timestamp,
+                    )
+                    if event
+                    else None
+                ),
+                audio=audio,
+            )
+
+        @app.get(
+            "/session/{session_id}/status",
+            response_model=DetectionStatusResponse,
+        )
+        def detection_status(session_id: str) -> DetectionStatusResponse:
+            scope = self._get_or_create(session_id)
+            return DetectionStatusResponse(
+                session_id=session_id,
+                camera_connected=scope.session_state.camera_connected,
+                detection_enabled=scope.session_state.detection_enabled,
+                audio_enabled=scope.session_state.audio_enabled,
+                latest_prediction=scope.session_state.latest_prediction,
+                latest_confidence=scope.latest_confidence,
+                state=scope.prediction_service.state,
+                history_count=len(scope.session_state.prediction_history),
+            )
+
+        @app.post(
+            "/session/{session_id}/detection/start",
+            response_model=DetectionControlResponse,
+        )
+        def detection_start(session_id: str) -> DetectionControlResponse:
+            scope = self._get_or_create(session_id)
+            scope.camera_server.start()
+            scope.session_state.camera_connected = True
+            scope.session_state.detection_enabled = True
+            return DetectionControlResponse(
+                session_id=session_id,
+                detection_enabled=True,
+                camera_status=scope.camera_server.status,
+            )
+
+        @app.post(
+            "/session/{session_id}/detection/stop",
+            response_model=DetectionControlResponse,
+        )
+        def detection_stop(session_id: str) -> DetectionControlResponse:
+            scope = self._get_or_create(session_id)
+            scope.camera_server.stop()
+            scope.session_state.camera_connected = False
+            scope.session_state.detection_enabled = False
+            return DetectionControlResponse(
+                session_id=session_id,
+                detection_enabled=False,
+                camera_status=scope.camera_server.status,
+            )
+
+        @app.post(
+            "/session/{session_id}/audio/enable",
+            response_model=AudioControlResponse,
+        )
+        def audio_enable(session_id: str) -> AudioControlResponse:
+            scope = self._get_or_create(session_id)
+            scope.audio_service.enable()
+            scope.session_state.audio_enabled = True
+            return AudioControlResponse(session_id=session_id, audio_enabled=True)
+
+        @app.post(
+            "/session/{session_id}/audio/disable",
+            response_model=AudioControlResponse,
+        )
+        def audio_disable(session_id: str) -> AudioControlResponse:
+            scope = self._get_or_create(session_id)
+            scope.audio_service.disable()
+            scope.session_state.audio_enabled = False
+            return AudioControlResponse(session_id=session_id, audio_enabled=False)
+
+        @app.get(
+            "/session/{session_id}/audio/status",
+            response_model=AudioStatusResponse,
+        )
+        def audio_status(session_id: str) -> AudioStatusResponse:
+            scope = self._get_or_create(session_id)
+            return AudioStatusResponse(
+                session_id=session_id,
+                enabled=scope.audio_service.enabled,
+                last_announced=scope.audio_service.last_announced,
+                queue_size=scope.audio_service.queue_size,
+            )
+
+        @app.get(
+            "/session/{session_id}/history",
+            response_model=dict[str, Any],
+        )
+        def history(session_id: str) -> dict[str, Any]:
+            scope = self._get_or_create(session_id)
+            return {
+                "session_id": session_id,
+                "count": len(scope.session_state.prediction_history),
+                "history": list(scope.session_state.prediction_history),
+            }
+
+        @app.delete("/session/{session_id}/history")
+        def clear_history(session_id: str) -> dict[str, str]:
+            scope = self._get_or_create(session_id)
+            scope.session_state.clear_history()
+            return {"session_id": session_id, "history": "cleared"}
+
+        @app.post("/session/{session_id}/reset", response_model=dict[str, str])
+        def reset_session(session_id: str) -> dict[str, str]:
+            scope = self._get_or_create(session_id)
+            scope.prediction_service.reset()
+            scope.audio_service.clear_queue()
+            scope.session_state.clear_history()
+            scope.session_state.latest_prediction = None
+            scope.latest_confidence = None
+            return {"session_id": session_id, "status": "reset"}
+
+        @app.delete("/session/{session_id}")
+        def remove_session(session_id: str) -> dict[str, str]:
+            self._remove_session(session_id)
+            return {"session_id": session_id, "status": "removed"}
+
+        return app
+
+
+# Module-level application instance for `uvicorn server.api:app`.
+api = GestureAPI()
+app = api.build_app()

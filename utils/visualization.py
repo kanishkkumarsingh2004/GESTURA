@@ -63,17 +63,18 @@ def plot_confusion_matrix(
     row_sums = cm.sum(axis=1, keepdims=True)
     normalized = np.divide(cm, row_sums, out=np.zeros_like(cm), where=row_sums != 0)
 
-    fig, ax = plt.subplots(figsize=(8, 6))
+    fig, ax = plt.subplots(figsize=(12, 10))
     im = ax.imshow(normalized, interpolation="nearest", cmap="Blues")
-    ax.figure.colorbar(im, ax=ax)
+    ax.figure.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
-    ax.set_xticks(np.arange(len(class_names)))
-    ax.set_yticks(np.arange(len(class_names)))
-    ax.set_xticklabels(class_names, rotation=45, ha="right")
-    ax.set_yticklabels(class_names)
-    ax.set_ylabel("True label")
-    ax.set_xlabel("Predicted label")
-    ax.set_title("Confusion Matrix (normalized)")
+    tick_count = len(class_names)
+    ax.set_xticks(np.arange(tick_count))
+    ax.set_yticks(np.arange(tick_count))
+    ax.set_xticklabels(class_names, rotation=90, ha="center", fontsize=7)
+    ax.set_yticklabels(class_names, fontsize=7)
+    ax.set_ylabel("True label", fontsize=10)
+    ax.set_xlabel("Predicted label", fontsize=10)
+    ax.set_title("Confusion Matrix (normalized)", fontsize=12, pad=15)
 
     thresh = normalized.max() / 2.0 if normalized.size else 0.5
     for i in range(cm.shape[0]):
@@ -85,10 +86,11 @@ def plot_confusion_matrix(
                 ha="center",
                 va="center",
                 color="white" if normalized[i, j] > thresh else "black",
-                fontsize=8,
+                fontsize=5,
             )
 
-    plt.tight_layout()
+    plt.tight_layout(pad=2.0)
+    plt.subplots_adjust(bottom=0.25, left=0.25)
     plt.savefig(path, dpi=150)
     plt.close(fig)
     return path

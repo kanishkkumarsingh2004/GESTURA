@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import streamlit as st
-from streamlit_webrtc import WebRtcMode, webrtc_streamer
 
 from components.audio_controls import render_audio_controls
-from components.camera_view import render_camera_controls, render_camera_placeholder
+from components.camera_view import render_camera_feed
 from components.prediction_view import render_prediction
 from components.sidebar import render_sidebar
 from model.inference import InferenceEngine
@@ -25,12 +24,12 @@ def _init_session_state() -> None:
         "prediction_service": None,
         "audio_service": None,
         "camera_status": "disconnected",
-        "detection_enabled": False,
+        "detection_enabled": True,
         "audio_enabled": True,
         "current_gesture": None,
         "current_confidence": None,
         "prediction_history": [],
-        "camera_start": False,
+        "camera_start": True,
         "camera_stop": False,
         "audio_enable": False,
         "audio_disable": False,
@@ -77,24 +76,9 @@ def render_live_detection() -> None:
 
     with col_left:
         st.subheader("Camera")
-        render_camera_placeholder()
-        render_camera_controls(st.session_state["detection_enabled"])
+        render_camera_feed(inference_engine)
 
-        # Handle camera start/stop actions.
-        if st.session_state.pop("camera_start", False):
-            st.session_state["detection_enabled"] = True
-            st.session_state["camera_status"] = "active"
-            st.rerun()
-        if st.session_state.pop("camera_stop", False):
-            st.session_state["detection_enabled"] = False
-            st.session_state["camera_status"] = "disconnected"
-            st.session_state["current_gesture"] = None
-            st.session_state["current_confidence"] = None
-            if st.session_state.get("prediction_service"):
-                st.session_state["prediction_service"].reset()
-            st.rerun()
-
-        status = st.session_state["camera_status"]
+        status = st.session_state.get("camera_status", "active")
         st.caption(f"Camera status: {status}")
 
         st.markdown("### Detection")
@@ -152,16 +136,6 @@ def render_live_detection() -> None:
     if st.button("Clear History", use_container_width=True):
         st.session_state["prediction_history"] = []
         st.rerun()
-
-
-# WebRTC streamer configured but frame processing is orchestrated by the
-# prediction service; the browser camera remains the source of frames.
-webrtc_streamer(
-    key="gesture-camera",
-    mode=WebRtcMode.SENDRECV,
-    rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
-    media_stream_constraints={"video": True, "audio": False},
-)
 
 
 if __name__ == "__main__":

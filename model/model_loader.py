@@ -76,6 +76,8 @@ def load_model(
             map_location=device or "cpu",
             weights_only=True,
         )
+        if isinstance(state_dict, dict) and "model_state_dict" in state_dict:
+            state_dict = state_dict["model_state_dict"]
     except Exception as exc:  # noqa: BLE001 - surface as CheckpointError
         raise CheckpointError(f"Failed to load checkpoint {checkpoint_path}: {exc}") from exc
 

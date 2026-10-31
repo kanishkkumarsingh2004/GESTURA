@@ -1,13 +1,18 @@
 # Gesture Recognition Assistant
 
 Real-time hand gesture recognition and audio assistant built with Python,
-PyTorch, OpenCV and Streamlit.
+PyTorch, OpenCV and Streamlit, with a FastAPI HTTP server so external
+frontends (e.g. a main website) can connect to gesture recognition via REST.
 
 ## Overview
 
 The application accesses the browser camera via WebRTC, processes frames with
 OpenCV, runs a PyTorch classifier, stabilizes predictions and speaks recognized
 gestures through browser audio.
+
+A FastAPI backend (`server/api.py`, served with uvicorn) exposes the same
+inference, model metadata, gesture vocabulary and per-session detection/audio
+state over HTTP, so a separate website can integrate without running Streamlit.
 
 Supported gestures: HELLO, YES, NO, THANK_YOU, PLEASE, STOP, HELP, GOOD, BAD,
 LOVE, plus NONE for unsupported/unknown input.
@@ -20,6 +25,8 @@ LOVE, plus NONE for unsupported/unknown input.
 - OpenCV, NumPy, Pillow (computer vision / preprocessing)
 - pandas, matplotlib, scikit-learn (metrics, plots)
 - PyYAML (configuration)
+- FastAPI + uvicorn (HTTP API for external frontends)
+- httpx, anyio (API test client)
 - pytest, ruff, mypy, bandit (testing / lint / type-check / security)
 - uv (environment & dependency management)
 
@@ -49,7 +56,7 @@ gesture-recognition/
 │   ├── navbar.py
 │   ├── cards.py
 │   ├── charts.py
-│   ├── camera_view.py
+│   ├── camera_view.py        # Camera preview; mediapipe Tasks hand landmarker
 │   ├── prediction_view.py
 │   └── audio_controls.py
 │
@@ -63,13 +70,15 @@ gesture-recognition/
 │   ├── weights/              # Versioned model weights (.gitkeep)
 │   └── exports/              # TorchScript / ONNX exports (.gitkeep)
 │
-├── server/                   # Application services (camera, prediction, audio, session)
+├── server/                   # Application services + FastAPI HTTP API
 │   ├── __init__.py
 │   ├── camera_server.py      # Camera stream lifecycle
 │   ├── stream_handler.py     # WebRTC frame callback (lightweight)
 │   ├── prediction_service.py # Prediction state machine + stabilization
 │   ├── audio_service.py      # Bounded audio queue, duplicate prevention, GESTURE_TEXT
-│   └── session_manager.py    # Session-isolated state
+│   ├── session_manager.py    # Session-isolated state
+│   ├── api.py                # FastAPI app (prediction, gestures, session, audio)
+│   └── api_models.py         # Pydantic request/response schemas
 │
 ├── train/                    # Offline training pipeline
 │   ├── __init__.py
@@ -89,6 +98,7 @@ gesture-recognition/
 │
 ├── utils/                    # Shared utilities (train + inference consistent)
 │   ├── __init__.py
+│   ├── assets.py             # MediaPipe model asset runtime download (.model_cache/)
 │   ├── preprocessing.py      # Preprocessor (train == inference pipeline)
 │   ├── augmentation.py       # Augmenter (semantics-preserving)
 │   ├── metrics.py            # EvaluationResult + latency measurement
@@ -102,7 +112,16 @@ gesture-recognition/
 │   ├── collect_data.py       # Capture gesture images from local camera
 │   ├── preprocess_data.py    # Preprocess raw -> processed (never touches raw)
 │   ├── evaluate.py           # Evaluate a saved checkpoint on test data
-│   └── export_model.py       # Export to TorchScript / ONNX
+│   ├── export_model.py       # Export to TorchScript / ONNX
+│   ├── download_dataset.py   # Download HAGRID gesture archives
+│   ├── download_from_hf.py   # Download model assets from Hugging Face
+│   ├── generate_graphs.py    # Graph generation
+│   ├── generate_synthetic_data.py
+│   ├── prepare_dataset.py    # Organize HAGRID into data/raw/ + splits
+│   ├── preprocess_data.py    # Preprocess raw -> processed
+│   ├── run_api.py            # Run the FastAPI server (uvicorn entrypoint)
+│   ├── run_transformers_model.py
+│   └── structure_data.py
 │
 ├── outputs/                  # Generated artifacts (not committed)
 │   ├── checkpoints/          # best_model.pth + per-epoch checkpoints
@@ -113,13 +132,15 @@ gesture-recognition/
 │
 ├── test/                     # Automated tests (pytest)
 │   ├── __init__.py
-│   ├── test_model.py
+│   ├── test_api.py           # FastAPI API tests (fake engine, no model load)
+│   ├── test_audio.py
+│   ├── test_augmentation.py
+│   ├── test_camera.py
 │   ├── test_dataset.py
 │   ├── test_inference.py
+│   ├── test_model.py
 │   ├── test_preprocessing.py
-│   ├── test_camera.py
-│   ├── test_audio.py
-│   └── test_augmentation.py
+│   └── test_camera.py
 │
 ├── docs/                     # Documentation
 │   ├── prd.md
@@ -130,7 +151,8 @@ gesture-recognition/
 │   ├── training.md
 │   └── deployment.md
 │
-└── venv/                     # Virtual environment (NOT committed)
+├── venv/                     # Virtual environment (NOT committed)
+└── .venv/                    # (legacy; project standard is venv/)
 ```
 
 ## File connections (how modules wire together)
@@ -141,8 +163,47 @@ gesture-recognition/
 - `model.inference.InferenceEngine.load_model()` → `model.model_loader.load_for_inference` → `model.architecture.build_model` + safe `torch.load(..., weights_only=True)`.
 - `model.model_loader` → `model.classifier.build_model_config` (single source of truth for `num_classes` from `config.yaml` `class_mapping`).
 - `utils.preprocessing.Preprocessor` used identically in training (`train/train.py` collate) and inference (`model.inference.predict`) so preprocessing is consistent.
+- `components.camera_view.py` → mediapipe `tasks.vision.HandLandmarker` (model asset downloaded on first use by `utils.assets.ensure_hand_landmarker_model` into `.model_cache/`).
 - `train.trainer.Trainer.fit()` → `train.loss.build_loss`, `train.optimizer.build_optimizer`, `train.scheduler.build_scheduler`, `train.callbacks.{EarlyStopping,BestCheckpointTracker}`, `model.checkpoint.save_checkpoint`.
 - `scripts/evaluate.py` → `model.inference.InferenceEngine` + `utils.metrics.evaluate_predictions` + `utils.visualization.plot_confusion_matrix`.
+- `server/api.py` (`GestureAPI`) → wraps `model.inference.InferenceEngine` (shared read-only), `server.prediction_service.PredictionService`, `server.audio_service.AudioService`, `server.camera_server.CameraServer`, `server.session_manager.SessionState`; model loaded once, per-session state isolated by `session_id` (path or `X-Session-Id` header).
+- `server/api_models.py` → Pydantic schemas shared by every FastAPI route.
+
+## Run the HTTP API server (for an external website)
+
+The FastAPI server lets a separate frontend connect to gesture recognition over
+REST. Run it with uvicorn:
+
+```bash
+# Option 1: convenience entrypoint
+uv run --active python scripts/run_api.py
+
+# Option 2: uvicorn directly
+uv run uvicorn server.api:app --host 0.0.0.0 --port 8000
+```
+
+Key endpoints:
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/health` | Service health + model loaded status |
+| `GET` | `/model/info` | Architecture, classes, input size, device |
+| `GET` | `/gestures` | Supported gesture vocabulary + text mapping |
+| `POST` | `/predict` | Upload an image; returns prediction, stabilization, audio |
+| `GET` | `/session/{id}/status` | Session detection/audio state + latest prediction |
+| `POST` | `/session/{id}/detection/start` | Start detection for a session |
+| `POST` | `/session/{id}/detection/stop` | Stop detection for a session |
+| `POST` | `/session/{id}/audio/enable` | Enable audio for a session |
+| `POST` | `/session/{id}/audio/disable` | Disable audio for a session |
+| `GET` | `/session/{id}/audio/status` | Audio state + last announced gesture |
+| `GET` | `/session/{id}/history` | Session prediction history |
+| `DELETE` | `/session/{id}/history` | Clear session prediction history |
+| `POST` | `/session/{id}/reset` | Reset session stabilization/audio/history |
+| `DELETE` | `/session/{id}` | Remove a session and its resources |
+
+The model is loaded once and shared read-only across sessions; camera frames are
+processed in memory and never persisted. Errors return structured responses
+without exposing internal stack traces.
 
 ## Setup (first time)
 
@@ -157,8 +218,11 @@ source venv/bin/activate
 # 3. Install / sync all dependencies (pyproject.toml + uv.lock)
 uv sync
 
-# 4. Run the application
+# 4. Run the Streamlit application
 uv run --active streamlit run app.py
+
+# (or run the FastAPI API server instead)
+uv run --active python scripts/run_api.py
 ```
 
 Then open the URL Streamlit prints (default `http://localhost:8501`) and grant
@@ -179,9 +243,14 @@ uv lock                     # Regenerate uv.lock after pyproject.toml changes
 uv pip freeze > requirements.txt  # Export pinned requirements
 ```
 
-### Run the application
+### Run the application (Streamlit UI)
 ```bash
 uv run --active streamlit run app.py
+```
+
+### Run the FastAPI API server (external website integration)
+```bash
+uv run --active python scripts/run_api.py
 ```
 
 ### Train the model (offline — never runs during app startup)
@@ -231,147 +300,6 @@ uv run --active python scripts/download_dataset.py --annotations --extract
 ```
 
 Downloaded archives are written to `--save_path` (default `./hagrid/dataset/`).
-
-```python
-# scripts/download_dataset.py
-"""Download HAGRID gesture dataset archives.
-
-Secure implementation: uses stdlib urllib (no external wget dependency, no
-shell injection), validates every target against the known URL table, and
-writes only inside the configured save root.
-"""
-
-from __future__ import annotations
-
-import argparse
-import shutil
-import sys
-import zipfile
-from pathlib import Path
-from urllib.error import HTTPError, URLError
-from urllib.request import urlopen
-
-V2_URL = "https://rndml-team-cv.obs.ru-moscow-1.hc.sbercloud.ru/datasets/hagrid_v2/"
-MAIN_URL = "https://rndml-team-cv.obs.ru-moscow-1.hc.sbercloud.ru/datasets/hagrid/hagrid_dataset_new_554800/"
-
-URLS = {
-    "call": f"{MAIN_URL}hagrid_dataset/call.zip",
-    "dislike": f"{MAIN_URL}hagrid_dataset/dislike.zip",
-    "fist": f"{MAIN_URL}hagrid_dataset/fist.zip",
-    "four": f"{MAIN_URL}hagrid_dataset/four.zip",
-    "like": f"{MAIN_URL}hagrid_dataset/like.zip",
-    "mute": f"{MAIN_URL}hagrid_dataset/mute.zip",
-    "ok": f"{MAIN_URL}hagrid_dataset/ok.zip",
-    "one": f"{V2_URL}hagrid_v2_zip/one.zip",
-    "palm": f"{MAIN_URL}hagrid_dataset/palm.zip",
-    "peace_inverted": f"{MAIN_URL}hagrid_dataset/peace_inverted.zip",
-    "peace": f"{MAIN_URL}hagrid_dataset/peace.zip",
-    "rock": f"{V2_URL}hagrid_v2_zip/rock.zip",
-    "stop_inverted": f"{MAIN_URL}hagrid_dataset/stop_inverted.zip",
-    "stop": f"{MAIN_URL}hagrid_dataset/stop.zip",
-    "three": f"{MAIN_URL}hagrid_dataset/three.zip",
-    "three2": f"{MAIN_URL}hagrid_dataset/three2.zip",
-    "two_up_inverted": f"{MAIN_URL}hagrid_dataset/two_up_inverted.zip",
-    "two_up": f"{MAIN_URL}hagrid_dataset/two_up.zip",
-    "grabbing": f"{V2_URL}hagrid_v2_zip/grabbing.zip",
-    "grip": f"{V2_URL}hagrid_v2_zip/grip.zip",
-    "holy": f"{V2_URL}hagrid_v2_zip/holy.zip",
-    "point": f"{V2_URL}hagrid_v2_zip/point.zip",
-    "three3": f"{V2_URL}hagrid_v2_zip/three3.zip",
-    "timeout": f"{V2_URL}hagrid_v2_zip/timeout.zip",
-    "xsign": f"{V2_URL}hagrid_v2_zip/xsign.zip",
-    "hand_heart": f"{V2_URL}hagrid_v2_zip/hand_heart.zip",
-    "hands_heart2": f"{V2_URL}hagrid_v2_zip/hands_heart2.zip",
-    "little_finger": f"{V2_URL}hagrid_v2_zip/little_finger.zip",
-    "middle_finger": f"{V2_URL}hagrid_v2_zip/middle_finger.zip",
-    "take_picture": f"{V2_URL}hagrid_v2_zip/take_picture.zip",
-    "three_gun": f"{V2_URL}hagrid_v2_zip/three_gun.zip",
-    "thumb_index": f"{V2_URL}hagrid_v2_zip/thumb_index.zip",
-    "thumb_index2": f"{V2_URL}hagrid_v2_zip/thumb_index2.zip",
-    "no_gesture": f"{V2_URL}hagrid_v2_zip/no_gesture.zip",
-    "annotations": f"{V2_URL}annotations_with_landmarks/annotations.zip",
-}
-
-GESTURES = tuple(sorted(URLS.keys() - {"annotations"}))
-CHUNK = 1024 * 1024
-
-
-def download_file(url: str, destination: Path) -> None:
-    """Download a single URL to destination using stdlib urllib."""
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with urlopen(url, timeout=60) as response, open(destination, "wb") as out:
-            shutil.copyfileobj(response, out, length=CHUNK)
-    except (HTTPError, URLError, OSError) as exc:
-        raise RuntimeError(f"Failed to download {url}: {exc}") from exc
-
-
-def extract_zip(archive: Path, output_dir: Path) -> None:
-    """Extract a zip archive with path-traversal protection."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(archive) as zf:
-        for member in zf.infolist():
-            member_path = (output_dir / member.filename).resolve()
-            if output_dir.resolve() not in member_path.parents:
-                raise RuntimeError(f"Unsafe path in archive: {member.filename}")
-        zf.extractall(output_dir)
-
-
-def parse_arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Download HAGRID dataset archives")
-    parser.add_argument("-a", "--annotations", action="store_true", help="Download annotations")
-    parser.add_argument("-d", "--dataset", action="store_true", help="Download dataset")
-    parser.add_argument("-t", "--targets", nargs="+", default=list(GESTURES), help="Target(s)")
-    parser.add_argument("-p", "--save_path", type=str, default="./hagrid/dataset/", help="Save path")
-    parser.add_argument("-x", "--extract", action="store_true", help="Extract downloaded zip archives")
-    return parser.parse_args()
-
-
-def main(argv: list[str] | None = None) -> int:
-    params = parse_arguments()
-    save_path = Path(params.save_path).expanduser().resolve()
-
-    targets = params.targets
-    for target in targets:
-        if target not in URLS:
-            print(f"Unknown target: {target}. Available: {', '.join(sorted(URLS))}")
-            return 1
-
-    if params.dataset:
-        for target in targets:
-            dest = save_path / f"{target}.zip"
-            print(f"Downloading {target} -> {dest}")
-            download_file(URLS[target], dest)
-            if params.extract:
-                extract_zip(dest, save_path / target)
-                print(f"Extracted {target}")
-
-    if params.annotations:
-        dest = save_path / "annotations.zip"
-        print(f"Downloading annotations -> {dest}")
-        download_file(URLS["annotations"], dest)
-        if params.extract:
-            extract_zip(dest, save_path / "annotations")
-            print("Extracted annotations")
-
-    if not params.dataset and not params.annotations:
-        print("Nothing to download. Use --dataset and/or --annotations.")
-        return 1
-
-    print("Done.")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
-```
-
-### Example: download and extract specific gestures
-
-```bash
-uv run --active python scripts/download_dataset.py --dataset --extract \
-    --targets stop like peace rock no_gesture
-```
 
 ### Prepare downloaded data for training
 
@@ -462,12 +390,18 @@ uv run --active pytest test/ -q
 
 ## Usage
 
-1. Run `uv run --active streamlit run app.py`.
+1. Run `uv run --active streamlit run app.py` (UI) or
+   `uv run --active python scripts/run_api.py` (HTTP API).
 2. Train a model first (or place a checkpoint at `outputs/checkpoints/best_model.pth`).
-3. Go to **Live Detection**, start the camera, and grant browser camera permission.
-4. Make a gesture; once stabilized (confidence threshold + confirmation frames) it is announced via audio.
-5. Use **Dashboard** for status, **Prediction History** for the session log,
-   **Model Information** for metadata, and **Settings** to tune thresholds.
+3. **Streamlit UI:** Go to **Live Detection**, start the camera, and grant browser
+   camera permission. Make a gesture; once stabilized (confidence threshold +
+   confirmation frames) it is announced via audio. Use **Dashboard** for status,
+   **Prediction History** for the session log, **Model Information** for metadata,
+   and **Settings** to tune thresholds.
+4. **HTTP API:** Call `POST /predict` with an image file (plus `session_id` form
+   field or `X-Session-Id` header) to receive the stabilized gesture, confidence,
+   probabilities, inference latency and audio playback result from an external
+   frontend.
 
 ## Configuration (`config.yaml`)
 
@@ -484,14 +418,16 @@ All adjustable parameters live in `config.yaml`:
 ## Verification results
 
 - `ruff check .` — all checks passed
+- `ruff format --check` — formatted
 - `mypy . --exclude venv` — project code type-clean (only third-party stub notes for `torchvision`/`sklearn`, which ship no official stubs)
-- `pytest test/` — 15 tests passing
+- `pytest test/` — 27 tests passing
 
 ## Security
 
 - Camera starts only after explicit user action; frames processed in memory, never stored by default.
 - Checkpoints loaded with `torch.load(..., weights_only=True)`; metadata validated before loading.
-- Session-specific state (camera, audio queue, prediction history) is isolated per session.
+- Session-specific state (camera, audio queue, prediction history) is isolated per session via `session_id`.
+- Image uploads to `/predict` are capped at 10 MB and validated as decodable images.
 - No hardcoded secrets; see `docs/security.md` for the full security policy.
 
 ## Development workflow (per `docs/architecture.md`)
@@ -500,11 +436,11 @@ All adjustable parameters live in `config.yaml`:
 2. Dataset development (collect → preprocess → splits).
 3. Model development (`python -m train.train`).
 4. Model evaluation (`scripts/evaluate.py`).
-5. Real-time inference (Streamlit `02_Live_Detection.py`).
-6. Audio integration (browser speech synthesis, duplicate prevention).
+5. Real-time inference (Streamlit `02_Live_Detection.py` or FastAPI `/predict`).
+6. Audio integration (browser speech synthesis / API `audio/enable|disable`, duplicate prevention).
 7. Streamlit UI (dashboard, live detection, history, model info, settings).
 8. Testing and optimization (pytest, ruff, mypy).
-9. Deployment (export model, HTTPS + WebRTC for remote).
+9. Deployment (export model, HTTPS + WebRTC for remote; FastAPI server for external frontends).
 
 ## License
 
