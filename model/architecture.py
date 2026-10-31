@@ -1,8 +1,7 @@
 """Model architecture definitions for gesture recognition.
 
-Implements a configurable PyTorch CNN classifier built on torchvision backbones.
-The initial architecture is VGG16 with transfer learning support and a replaceable
-classification head.
+Implements a configurable PyTorch CNN classifier built on torchvision backbones
+and the exact R_CNN architecture provided.
 """
 
 from __future__ import annotations
@@ -11,7 +10,48 @@ from typing import Any, cast
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F  # noqa: N812 - PyTorch convention uses `F`
 import torchvision.models as weights_module
+
+
+class Rcnn(nn.Module):
+    """Exact R_CNN architecture as provided.
+
+    Four convolutional layers with max pooling, followed by a two-layer
+    fully connected classifier with softmax output. Returns both the
+    convolutional feature map and the final class probabilities.
+    """
+
+    def __init__(self, num_classes: int = 10) -> None:
+        super(Rcnn, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels=3, out_channels=64, kernel_size=3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=1)
+        self.conv3 = nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, stride=1, padding=1)
+        self.conv4 = nn.Conv2d(in_channels=256, out_channels=512, kernel_size=3, stride=1, padding=1)
+        self.layer1 = nn.Linear(512 * 7 * 7, 1000)
+        self.layer2 = nn.Linear(1000, num_classes)
+        self.softmax = nn.Softmax(dim=1)
+        self.pool = nn.MaxPool2d(2, 2)
+        self.relu = nn.ReLU()
+
+    def convolayer(self, data):
+        x = self.relu(self.conv1(data))
+        x = self.pool(self.relu(self.conv2(x)))
+        x = self.pool(self.relu(self.conv3(x)))
+        x = self.pool(self.relu(self.conv4(x)))
+        x = self.pool(self.pool(x))
+        return x
+
+    def nn_block(self, data):
+        x = torch.flatten(data, 1)
+        x = F.relu(self.layer1(x))
+        x = self.softmax(self.layer2(x))
+        return x
+
+    def forward(self, x):
+        x = self.convolayer(x)
+        y = self.nn_block(x)
+        return x, y
 
 
 def _resolve_weights(pretrained: bool, architecture: str) -> Any | None:
@@ -79,7 +119,7 @@ def build_model(
     """Factory function to build a gesture classification model.
 
     Args:
-        architecture: Backbone name (e.g. ``vgg16``, ``resnet18``).
+        architecture: Backbone name (e.g. ``vgg16``, ``resnet18``, ``r_cnn``).
         num_classes: Number of output gesture classes.
         pretrained: Load ImageNet pretrained backbone weights.
         device: Device to move the model to.
@@ -88,6 +128,13 @@ def build_model(
         Initialized model ready for training or inference.
     """
     lowered = architecture.lower()
+
+    if lowered == "r_cnn":
+        model = Rcnn(num_classes=num_classes)
+        if device is not None:
+            model = model.to(device)
+        return model
+
     weights = _resolve_weights(pretrained, lowered)
 
     model_fn = getattr(__import__("torchvision.models", fromlist=[lowered]), lowered, None)
@@ -111,6 +158,12 @@ def count_parameters(model: nn.Module) -> int:
 def freeze_backbone(model: nn.Module, architecture: str) -> nn.Module:
     """Freeze backbone parameters so only the classification head trains."""
     lowered = architecture.lower()
+    if lowered == "r_cnn":
+        # R_CNN: freeze conv layers, keep the classifier head trainable.
+        for name, param in model.named_parameters():
+            if not name.startswith("layer"):
+                param.requires_grad = False
+        return model
     if lowered.startswith("vgg"):
         for param in model.features.parameters():  # type: ignore[union-attr]
             param.requires_grad = False

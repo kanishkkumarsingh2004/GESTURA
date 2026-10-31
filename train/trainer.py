@@ -37,6 +37,7 @@ class TrainerConfig:
     pretrained: bool = True
     class_mapping: dict[str, int] = field(default_factory=dict)
     output_dir: str = "model"
+    resume_from: str | Path | None = None
 
 
 @dataclass
@@ -152,12 +153,20 @@ class Trainer:
 
             optimizer.zero_grad()
             outputs = self.model(images)
-            loss = criterion(outputs, labels)
+            if isinstance(outputs, tuple):
+                # R_CNN returns (features, probs) where probs is softmaxed.
+                # CrossEntropyLoss == NLLLoss(log_softmax(logits))
+                # == NLLLoss(log(probs)), so use NLLLoss on log probs.
+                probs = outputs[1]
+                loss = criterion(torch.log(probs + 1e-8), labels)
+                _, predicted = probs.max(1)
+            else:
+                loss = criterion(outputs, labels)
+                _, predicted = outputs.max(1)
             loss.backward()
             optimizer.step()
 
             running_loss += loss.item() * images.size(0)
-            _, predicted = outputs.max(1)
             total += labels.size(0)
             correct += predicted.eq(labels).sum().item()
 
@@ -173,9 +182,15 @@ class Trainer:
                 images = images.to(self.device)
                 labels = labels.to(self.device)
                 outputs = self.model(images)
-                loss = criterion(outputs, labels)
+                if isinstance(outputs, tuple):
+                    probs = outputs[1]
+                    loss = criterion(torch.log(probs + 1e-8), labels)
+                    _, predicted = probs.max(1)
+                else:
+                    loss = criterion(outputs, labels)
+                    _, predicted = outputs.max(1)
+
                 running_loss += loss.item() * images.size(0)
-                _, predicted = outputs.max(1)
                 total += labels.size(0)
                 correct += predicted.eq(labels).sum().item()
         self.model.train()

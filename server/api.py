@@ -15,7 +15,17 @@ from uuid import uuid4
 
 import cv2
 import numpy as np
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 from fastapi.responses import FileResponse
 
 from model.inference import InferenceEngine, PredictionResult
@@ -34,8 +44,8 @@ from server.api_models import (
     StableEventInfo,
 )
 from server.audio_service import GESTURE_TEXT, AudioService
-from server.camera_server import CameraServer
 from server.auth import verify_admin_key
+from server.camera_server import CameraServer
 from server.contribution_models import (
     ApprovedDatasetResponse,
     ContributionListResponse,
@@ -47,7 +57,6 @@ from server.contribution_models import (
     FrameListResponse,
     GeoRegionsResponse,
     GeoStatesResponse,
-    PublicApprovedContribution,
     ReviewContributionRequest,
     SignLanguageTypeItem,
     SignLanguageTypesResponse,
@@ -467,7 +476,7 @@ class GestureAPI:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=str(err),
-                )
+                ) from err
 
         @app.get(
             "/contributions/geo/sign-language-types",

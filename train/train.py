@@ -11,8 +11,8 @@ import argparse
 import sys
 from typing import Any
 
-import torch
 import numpy as np
+import torch
 from torch.utils.data import DataLoader, random_split
 
 from data.dataset import GestureDataset, load_class_mapping_from_root
@@ -32,6 +32,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--learning-rate", type=float, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--device", default="auto", help="cuda, cpu or auto")
+    parser.add_argument(
+        "--architecture",
+        default="vgg16",
+        help="Model architecture: vgg16, resnet18, mobilenet_v3_small, r_cnn",
+    )
+    parser.add_argument(
+        "--resume-from",
+        default=None,
+        help="Path to a checkpoint to resume training from",
+    )
     return parser
 
 
@@ -49,10 +59,11 @@ def main(argv: list[str] | None = None) -> int:
         seed=args.seed if args.seed is not None else 42,
         device=args.device,
         num_classes=num_classes,
-        architecture="vgg16",
+        architecture=args.architecture,
         pretrained=True,
         class_mapping=class_mapping,
         output_dir=args.output_dir,
+        resume_from=args.resume_from,
     )
 
     dataset = GestureDataset(args.data_root, class_mapping=class_mapping)

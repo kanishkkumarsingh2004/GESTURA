@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import re
 import shutil
 import time
 import uuid
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -452,7 +451,7 @@ class ContributionService:
         try:
             canonical_region, canonical_state = validate_india_geo(req.region, req.state)
         except ValueError as err:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err))
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err)) from err
 
         # 2. Validate sign language classification & variety
         try:
@@ -460,7 +459,7 @@ class ContributionService:
                 req.sign_language_type, req.variety_name
             )
         except ValueError as err:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err))
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err)) from err
 
         clean_name = re.sub(r"[^A-Za-z0-9_]+", "_", req.gesture_name.strip()).upper()
         if not clean_name:
@@ -611,9 +610,9 @@ class ContributionService:
         total_frames = 0
 
         # Pre-seed regions and sign language types with 0 counts
-        by_region: dict[str, int] = {r: 0 for r in INDIA_REGIONS.keys()}
+        by_region: dict[str, int] = dict.fromkeys(INDIA_REGIONS.keys(), 0)
         by_state: dict[str, int] = {}
-        by_sign_language_type: dict[str, int] = {t: 0 for t in SIGN_LANGUAGE_TYPES}
+        by_sign_language_type: dict[str, int] = dict.fromkeys(SIGN_LANGUAGE_TYPES, 0)
 
         # Track processed contribution IDs to prevent duplicate counts
         seen_cids: set[str] = set()

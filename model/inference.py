@@ -93,8 +93,14 @@ class InferenceEngine:
 
         start = time.perf_counter()
         with torch.inference_mode():
-            logits = self._model(tensor)
-            probs = torch.softmax(logits, dim=1)[0]
+            output = self._model(tensor)
+            # R_CNN.forward returns (feature_map, probabilities); standard
+            # backbones return raw logits. Handle both without double-softmax.
+            if isinstance(output, tuple):
+                probs = output[1][0]  # already softmaxed by R_CNN
+            else:
+                logits = output
+                probs = torch.softmax(logits, dim=1)[0]
         elapsed_ms = (time.perf_counter() - start) * 1000.0
 
         probs_np = probs.detach().cpu().numpy()

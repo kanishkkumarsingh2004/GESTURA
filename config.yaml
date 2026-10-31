@@ -4,7 +4,7 @@ app:
   environment: development
 
 model:
-  architecture: vgg16
+  architecture: r_cnn
   checkpoint: model/best_model.pt
   input_width: 224
   input_height: 224

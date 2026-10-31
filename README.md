@@ -131,7 +131,7 @@ To provide full transparency, every major feature and subsystem is classified be
 - **Validation & Schemas**: [Pydantic v2](https://docs.pydantic.dev/)
 
 ### Machine Learning & Computer Vision (`model/`, `utils/`, `train/`)
-- **Deep Learning**: [PyTorch 2.5+](https://pytorch.org/) & [TorchVision](https://pytorch.org/vision/) (VGG16 Backbone with transfer learning)
+- **Deep Learning**: [PyTorch 2.5+](https://pytorch.org/) & [TorchVision](https://pytorch.org/vision/) (VGG16 Backbone with transfer learning, or the custom R_CNN CNN)
 - **Computer Vision**: [OpenCV (opencv-python-headless 4.9+)](https://opencv.org/)
 - **Hand Localization**: [Google MediaPipe](https://developers.google.com/mediapipe) HandLandmarker (Task Vision API)
 - **Data Engineering**: NumPy, Pillow, Pandas, Scikit-learn (`GroupKFold`)
@@ -281,8 +281,42 @@ GESTURA utilizes a transfer-learning convolutional neural network built upon a *
                Linear(4096 -> num_classes)
                           │
                           ▼
-              Output Logits (1 x num_classes)
+               Output Logits (1 x num_classes)
 ```
+
+### Alternative: R_CNN Custom CNN
+
+GESTURA also includes the exact `R_CNN` custom CNN architecture (`model/architecture.py:R_CNN`). It is selectable by setting `model.architecture: r_cnn` in `config.yaml`:
+
+```
+[Input Tensor: 1 x 3 x 224 x 224 (RGB)]
+                           │
+                           ▼
+              Conv2d(3 -> 64, k=3, p=1) + ReLU
+                           │
+                           ▼
+        MaxPool2d + Conv2d(64 -> 128, k=3, p=1) + ReLU
+                           │
+                           ▼
+        MaxPool2d + Conv2d(128 -> 256, k=3, p=1) + ReLU
+                           │
+                           ▼
+        MaxPool2d + Conv2d(256 -> 512, k=3, p=1) + ReLU
+                           │
+                           ▼
+              MaxPool2d + MaxPool2d (512 x 7 x 7 features)
+                           │
+                           ▼
+              Flatten -> Linear(512*7*7 -> 1000) + ReLU
+                           │
+                           ▼
+                    Linear(1000 -> num_classes) + Softmax
+                           │
+                           ▼
+              Output: (feature_map, class_probabilities)
+```
+
+The `forward` method returns a tuple of `(features, probabilities)`. Use `build_model("r_cnn", num_classes=...)` to instantiate it.
 
 ### Checkpoint Safety & Serialization
 Checkpoints are loaded using safe deserialization (`torch.load(..., weights_only=True)`) to eliminate arbitrary pickle execution risks. Each checkpoint bundle contains:
@@ -413,7 +447,7 @@ GESTURA/
 │   └── session_manager.py        # Isolated per-session scopes
 │
 ├── model/                        # PyTorch Model & Inference Engine
-│   ├── architecture.py           # VGG16 backbone + replaceable head
+│   ├── architecture.py           # VGG16 + R_CNN backbone + replaceable head
 │   ├── classifier.py             # ModelConfig & canonical class mapping
 │   ├── inference.py              # Thread-safe InferenceEngine
 │   ├── model_loader.py           # Safe checkpoint loading (weights_only=True)
