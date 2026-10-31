@@ -1300,7 +1300,6 @@ export default function ContributePage() {
                 </Button>
               </div>
             </div>
-            </div>
 
             {isLoadingSubmissions ? (
               <div className="py-16 text-center text-text-muted space-y-2">
