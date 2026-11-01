@@ -579,6 +579,32 @@ class GestureAPI:
             return self.contribution_service.get_contribution(contribution_id)
 
         @app.get(
+            "/contributions/{contribution_id}/video",
+            tags=["Contributions - Ingestion"],
+            summary="Retrieve original video file",
+            description="Streams or downloads the original uploaded gesture video file.",
+        )
+        def get_contribution_video_file(
+            contribution_id: str,
+        ) -> FileResponse:
+            video_path = self.contribution_service.get_video_file_path(contribution_id)
+            suffix = video_path.suffix.lower()
+            media_type = "video/mp4"
+            if suffix == ".webm":
+                media_type = "video/webm"
+            elif suffix == ".mov":
+                media_type = "video/quicktime"
+            elif suffix == ".avi":
+                media_type = "video/x-msvideo"
+            elif suffix == ".mkv":
+                media_type = "video/x-matroska"
+            return FileResponse(
+                path=str(video_path),
+                media_type=media_type,
+                filename=video_path.name,
+            )
+
+        @app.get(
             "/contributions/{contribution_id}/frames",
             response_model=FrameListResponse,
             tags=["Contributions - Ingestion"],

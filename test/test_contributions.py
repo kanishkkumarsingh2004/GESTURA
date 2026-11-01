@@ -16,6 +16,7 @@ Tests:
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 from typing import Any, Dict
 
@@ -823,3 +824,161 @@ def test_openapi_schema_contains_new_endpoints(contrib_env):
     assert "Contributions - Ingestion" in endpoint_tags
     assert "Contributions - Moderation" in endpoint_tags
 
+
+
+def test_get_contribution_video_file_endpoint(contrib_env):
+    """Test retrieving and streaming the original stored gesture video file via API."""
+    service, client, tmp_path = contrib_env
+    video_path = tmp_path / "stream_test.mp4"
+    _create_synthetic_video(video_path, num_frames=25, fps=25.0)
+
+    with open(video_path, "rb") as f:
+        original_bytes = f.read()
+
+    with open(video_path, "rb") as f:
+        resp = client.post(
+            "/contributions/upload",
+            files={"file": ("stream_test.mp4", f, "video/mp4")},
+        )
+    assert resp.status_code == 201
+    cid = resp.json()["contribution_id"]
+
+    # Stream video before submit (draft location)
+    vid_resp = client.get(f"/contributions/{cid}/video")
+    assert vid_resp.status_code == 200
+    assert "video/mp4" in vid_resp.headers.get("content-type", "")
+    assert len(vid_resp.content) == len(original_bytes)
+
+    # Submit contribution (moves to regional pending location)
+    client.post(f"/contributions/{cid}/extract", json={"sample_interval": 5, "max_frames": 10})
+    sub_resp = client.post(
+        f"/contributions/{cid}/submit",
+        json={
+            "region": "NORTH",
+            "state": "Delhi",
+            "sign_language_type": "Indian Sign Language (ISL)",
+            "gesture_name": "NAMASTE",
+            "meaning": "Hello / Greetings",
+            "category": "Greetings",
+            "gesture_type": "dynamic",
+        },
+    )
+    assert sub_resp.status_code == 200
+
+    # Stream video after submission (canonical regional pending location)
+    vid_resp_after = client.get(f"/contributions/{cid}/video")
+    assert vid_resp_after.status_code == 200
+    assert len(vid_resp_after.content) == len(original_bytes)
+
+    # Test 404 on nonexistent contribution
+    assert client.get("/contributions/nonexistent_cid/video").status_code == 404
+
+
+def test_contribution_persistence_across_service_restarts(contrib_env):
+    """Test that uploaded videos and metadata survive FastAPI service restarts and SQLite syncing."""
+    service, client, tmp_path = contrib_env
+    cid = _upload_and_extract(client, tmp_path, filename="persistence_test.mp4")
+
+    # Submit to pending approval
+    sub_resp = client.post(
+        f"/contributions/{cid}/submit",
+        json={
+            "region": "WEST",
+            "state": "Maharashtra",
+            "district_city": "Mumbai",
+            "sign_language_type": "Indian Sign Language (ISL)",
+            "gesture_name": "DHANYAVAAD",
+            "meaning": "Thank you",
+            "category": "Greetings",
+            "gesture_type": "dynamic",
+        },
+    )
+    assert sub_resp.status_code == 200
+
+    base_dir = service.base_dir
+    db_path = base_dir / "contributions.db"
+    assert db_path.is_file(), "contributions.db must exist"
+
+    # Verify SQLite index has entry
+    with sqlite3.connect(str(db_path)) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT status, gesture_name, stored_video_path FROM contributions WHERE contribution_id = ?", (cid,))
+        row = cursor.fetchone()
+        assert row is not None
+        assert row[0] == "pending_approval"
+        assert row[1] == "DHANYAVAAD"
+        assert row[2] is not None
+        assert Path(row[2]).is_file(), f"Stored video at {row[2]} must exist"
+
+    # Simulate FastAPI service restart: create fresh service & client instance
+    restarted_service = ContributionService(base_dir=base_dir)
+    restarted_api = GestureAPI(engine=FakeEngine(), contribution_service=restarted_service)
+    restarted_client = TestClient(restarted_api.build_app())
+
+    # Verify metadata and video retrieval through restarted service
+    restarted_meta = restarted_service.get_contribution(cid)
+    assert restarted_meta.contribution_id == cid
+    assert restarted_meta.gesture_name == "DHANYAVAAD"
+    assert restarted_meta.status == "pending_approval"
+
+    stored_video_path = restarted_service.get_video_file_path(cid)
+    assert stored_video_path.is_file()
+
+    # Verify API endpoints work after restart
+    api_get_resp = restarted_client.get(f"/contributions/{cid}")
+    assert api_get_resp.status_code == 200
+    assert api_get_resp.json()["gesture_name"] == "DHANYAVAAD"
+
+    api_vid_resp = restarted_client.get(f"/contributions/{cid}/video")
+    assert api_vid_resp.status_code == 200
+    assert len(api_vid_resp.content) > 0
+
+
+def test_submit_contribution_auto_extracts_if_unextracted(contrib_env):
+    """Test that submitting without manually clicking frame extraction automatically runs extraction."""
+    service, client, tmp_path = contrib_env
+    video_path = tmp_path / "auto_extract.mp4"
+    _create_synthetic_video(video_path, num_frames=30, fps=25.0)
+
+    with open(video_path, "rb") as f:
+        resp = client.post(
+            "/contributions/upload",
+            files={"file": ("auto_extract.mp4", f, "video/mp4")},
+        )
+    assert resp.status_code == 201
+    cid = resp.json()["contribution_id"]
+
+    # Submit directly without calling /extract first
+    sub_resp = client.post(
+        f"/contributions/{cid}/submit",
+        json={
+            "region": "SOUTH",
+            "state": "Karnataka",
+            "district_city": "Bengaluru",
+            "sign_language_type": "Indian Sign Language (ISL)",
+            "gesture_name": "NAMASKARA",
+            "meaning": "Greetings in Kannada",
+            "category": "Greetings",
+            "gesture_type": "dynamic",
+        },
+    )
+    assert sub_resp.status_code == 200
+    data = sub_resp.json()
+    assert data["status"] == "pending_approval"
+    assert data["usable_frame_count"] >= 3
+
+
+def test_video_upload_too_short_rejected(contrib_env):
+    """Test that video shorter than 0.3s is rejected with HTTP 400."""
+    service, client, tmp_path = contrib_env
+    video_path = tmp_path / "too_short.mp4"
+    # 3 frames at 25 fps = 0.12s < 0.3s
+    _create_synthetic_video(video_path, num_frames=3, fps=25.0)
+
+    with open(video_path, "rb") as f:
+        resp = client.post(
+            "/contributions/upload",
+            files={"file": ("too_short.mp4", f, "video/mp4")},
+        )
+    assert resp.status_code == 400
+    assert "too short" in resp.json()["detail"].lower()

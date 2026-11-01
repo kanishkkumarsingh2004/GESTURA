@@ -9,6 +9,8 @@ import { Card } from "@/components/card";
 import {
   predictImage,
   getHealth,
+  startDetection,
+  stopDetection,
   type HealthResponse,
   type PredictResponse,
   BACKEND_URL,
@@ -80,7 +82,7 @@ export default function StudioPage() {
       setBackendStatus("checking");
       const health = await getHealth();
       setBackendHealth(health);
-      setBackendStatus(health.status === "ok" || health.model_loaded ? "connected" : "disconnected");
+      setBackendStatus(health.status === "ok" && Boolean(health.model_loaded) ? "connected" : "disconnected");
     } catch {
       setBackendStatus("disconnected");
       setBackendHealth(null);
@@ -123,13 +125,26 @@ export default function StudioPage() {
         await videoRef.current.play();
       }
       setIsCameraActive(true);
-    } catch (err) {
+
+      // Start backend detection session
+      startDetection(sessionId).catch((err) => {
+        console.warn("Backend start detection session warning:", err);
+      });
+    } catch (err: any) {
       console.error("Camera access error:", err);
-      setCameraError(
-        err instanceof Error
-          ? `${err.name}: ${err.message}`
-          : "Unable to access camera. Please verify permissions."
-      );
+      let message = "Unable to access camera. Please verify permissions.";
+      if (err?.name === "NotAllowedError" || err?.name === "PermissionDeniedError") {
+        message = "Camera permission was denied. Please allow camera access in your browser settings.";
+      } else if (err?.name === "NotFoundError" || err?.name === "DevicesNotFoundError") {
+        message = "No camera device found. Please connect a webcam.";
+      } else if (err?.name === "NotReadableError" || err?.name === "TrackStartError") {
+        message = "Camera is currently in use by another application.";
+      } else if (err?.name === "OverconstrainedError") {
+        message = "Selected camera constraints could not be satisfied.";
+      } else if (err instanceof Error) {
+        message = `${err.name}: ${err.message}`;
+      }
+      setCameraError(message);
       setIsCameraActive(false);
     }
   };
@@ -148,7 +163,8 @@ export default function StudioPage() {
       videoRef.current.srcObject = null;
     }
     setIsCameraActive(false);
-  }, []);
+    stopDetection(sessionId).catch(() => {});
+  }, [sessionId]);
 
   useEffect(() => {
     return () => {
@@ -257,17 +273,23 @@ export default function StudioPage() {
 
     setIsProcessing(true);
     try {
-      // Draw video frame to hidden canvas
+      // Draw video frame to hidden canvas with center crop matching HUD target
       if (!canvasRef.current) {
         canvasRef.current = document.createElement("canvas");
       }
       const canvas = canvasRef.current;
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      const cropSize = Math.floor(Math.min(vw, vh) * 0.70);
+      const cropX = Math.floor((vw - cropSize) / 2);
+      const cropY = Math.floor((vh - cropSize) / 2);
+
+      canvas.width = 224;
+      canvas.height = 224;
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
 
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      ctx.drawImage(video, cropX, cropY, cropSize, cropSize, 0, 0, 224, 224);
 
       // Convert frame to Blob
       const blob = await new Promise<Blob | null>((resolve) =>
@@ -292,37 +314,49 @@ export default function StudioPage() {
         setCurrentConfidence(conf);
         setLastInferenceTime(latency);
 
-        if (gesture && gesture !== "NONE") {
-          // If stabilized and not duplicate
-          const event: RecognizedGestureEvent = {
-            id: "evt_" + Date.now(),
-            gesture,
-            text: gesture.replace(/_/g, " "),
-            confidence: conf,
-            timestamp: Date.now(),
-            inferenceTimeMs: latency,
-            audioPlayed: audioEnabled,
-          };
+        // Stabilized and confidence-verified recognition
+        // Accept prediction if verified stable by temporal smoothing OR high confidence (>= 0.85)
+        const isReliable = res.stable || (conf !== null && conf >= 0.85);
+        if (gesture && gesture !== "NONE" && isReliable) {
+          const formattedText = gesture.replace(/_/g, " ");
 
-          setRecentEvents((prev) => [event, ...prev].slice(0, 20));
-          setRecognizedTranscript((prev) => [...prev, event.text]);
+          setRecognizedTranscript((prev) => {
+            const lastWord = prev[prev.length - 1];
+            if (lastWord === formattedText) {
+              return prev; // Suppress duplicate consecutive utterance
+            }
 
-          // Audio speech
-          if (audioEnabled) {
-            speech.speak(event.text);
-          }
+            const event: RecognizedGestureEvent = {
+              id: "evt_" + Date.now(),
+              gesture,
+              text: formattedText,
+              confidence: conf ?? 0,
+              timestamp: Date.now(),
+              inferenceTimeMs: latency ?? 0,
+              audioPlayed: audioEnabled,
+            };
 
-          // Persist session
-          const currentSession: RecognitionSession = {
-            id: sessionId,
-            title: `Live Studio — ${new Date(sessionStartTime).toLocaleTimeString()}`,
-            startedAt: sessionStartTime,
-            endedAt: Date.now(),
-            events: [event, ...recentEvents],
-            transcript: [...recognizedTranscript, event.text].join(" "),
-            source: "live_camera",
-          };
-          saveSession(currentSession);
+            setRecentEvents((prevEvents) => [event, ...prevEvents].slice(0, 20));
+
+            if (audioEnabled) {
+              speech.speak(formattedText);
+            }
+
+            // Persist session
+            const updatedTranscript = [...prev, formattedText].join(" ");
+            const currentSession: RecognitionSession = {
+              id: sessionId,
+              title: `Live Studio — ${new Date(sessionStartTime).toLocaleTimeString()}`,
+              startedAt: sessionStartTime,
+              endedAt: Date.now(),
+              events: [event, ...recentEvents],
+              transcript: updatedTranscript,
+              source: "live_camera",
+            };
+            saveSession(currentSession);
+
+            return [...prev, formattedText];
+          });
         }
       } else {
         // Backend offline indicator
@@ -330,8 +364,17 @@ export default function StudioPage() {
         setCurrentConfidence(null);
         setLastInferenceTime(null);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.warn("Prediction frame failed:", err);
+      const isNetworkError =
+        err?.name === "AbortError" ||
+        err?.message?.includes("fetch") ||
+        err?.message?.includes("timed out") ||
+        err?.message?.includes("NetworkError");
+      if (isNetworkError) {
+        setBackendStatus("disconnected");
+        setCurrentGesture("DISCONNECTED");
+      }
     } finally {
       setIsProcessing(false);
     }

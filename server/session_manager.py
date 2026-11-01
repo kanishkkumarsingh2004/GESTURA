@@ -13,7 +13,7 @@ from typing import Any
 @dataclass
 class SessionState:
     camera_connected: bool = False
-    detection_enabled: bool = False
+    detection_enabled: bool = True
     audio_enabled: bool = True
     latest_prediction: str | None = None
     prediction_history: list[dict[str, Any]] = field(default_factory=list)

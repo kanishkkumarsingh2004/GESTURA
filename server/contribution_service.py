@@ -8,6 +8,7 @@ import re
 import shutil
 import time
 import uuid
+import sqlite3
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
@@ -70,6 +71,156 @@ class ContributionService:
         (self.pending_dir / "_drafts").mkdir(parents=True, exist_ok=True)
         self.approved_dir.mkdir(parents=True, exist_ok=True)
         self.rejected_dir.mkdir(parents=True, exist_ok=True)
+
+        self.db_path = self.base_dir / "contributions.db"
+        self._init_db()
+        self._sync_disk_to_db()
+
+    # ------------------------------------------------------------------ SQLite Persistence
+    def _init_db(self) -> None:
+        try:
+            with sqlite3.connect(str(self.db_path)) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS contributions (
+                        contribution_id TEXT PRIMARY KEY,
+                        status TEXT NOT NULL,
+                        original_filename TEXT,
+                        stored_video_path TEXT,
+                        video_duration_seconds REAL,
+                        video_fps REAL,
+                        video_resolution_width INTEGER,
+                        video_resolution_height INTEGER,
+                        total_video_frames INTEGER,
+                        usable_frame_count INTEGER,
+                        country TEXT,
+                        region TEXT,
+                        state TEXT,
+                        district_city TEXT,
+                        sign_language_type TEXT,
+                        variety_name TEXT,
+                        sign_language TEXT,
+                        gesture_name TEXT,
+                        meaning TEXT,
+                        category TEXT,
+                        gesture_type TEXT,
+                        contributor_id TEXT,
+                        rejection_reason TEXT,
+                        created_at REAL,
+                        updated_at REAL,
+                        metadata_json TEXT
+                    )
+                    """
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_contrib_status ON contributions(status)"
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_contrib_region ON contributions(region)"
+                )
+                conn.commit()
+        except Exception as exc:
+            logger.warning("Could not initialize SQLite contributions DB: %s", exc)
+
+    def _upsert_db(self, meta: dict[str, Any], stored_video_path: Optional[str] = None) -> None:
+        try:
+            cid = meta.get("contribution_id")
+            if not cid:
+                return
+            res = meta.get("video_resolution") or [0, 0]
+            res_w = res[0] if len(res) > 0 else 0
+            res_h = res[1] if len(res) > 1 else 0
+
+            with sqlite3.connect(str(self.db_path)) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT INTO contributions (
+                        contribution_id, status, original_filename, stored_video_path,
+                        video_duration_seconds, video_fps, video_resolution_width, video_resolution_height,
+                        total_video_frames, usable_frame_count, country, region, state,
+                        district_city, sign_language_type, variety_name, sign_language,
+                        gesture_name, meaning, category, gesture_type, contributor_id,
+                        rejection_reason, created_at, updated_at, metadata_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(contribution_id) DO UPDATE SET
+                        status = excluded.status,
+                        original_filename = COALESCE(excluded.original_filename, contributions.original_filename),
+                        stored_video_path = COALESCE(excluded.stored_video_path, contributions.stored_video_path),
+                        video_duration_seconds = excluded.video_duration_seconds,
+                        video_fps = excluded.video_fps,
+                        video_resolution_width = excluded.video_resolution_width,
+                        video_resolution_height = excluded.video_resolution_height,
+                        total_video_frames = excluded.total_video_frames,
+                        usable_frame_count = excluded.usable_frame_count,
+                        country = excluded.country,
+                        region = excluded.region,
+                        state = excluded.state,
+                        district_city = excluded.district_city,
+                        sign_language_type = excluded.sign_language_type,
+                        variety_name = excluded.variety_name,
+                        sign_language = excluded.sign_language,
+                        gesture_name = excluded.gesture_name,
+                        meaning = excluded.meaning,
+                        category = excluded.category,
+                        gesture_type = excluded.gesture_type,
+                        contributor_id = excluded.contributor_id,
+                        rejection_reason = excluded.rejection_reason,
+                        created_at = excluded.created_at,
+                        updated_at = excluded.updated_at,
+                        metadata_json = excluded.metadata_json
+                    """,
+                    (
+                        cid,
+                        meta.get("status", "uploaded"),
+                        meta.get("video_filename"),
+                        stored_video_path,
+                        meta.get("video_duration_seconds", 0.0),
+                        meta.get("video_fps", 0.0),
+                        res_w,
+                        res_h,
+                        meta.get("total_video_frames", 0),
+                        meta.get("usable_frame_count", 0),
+                        meta.get("country", COUNTRY_NAME),
+                        meta.get("region"),
+                        meta.get("state"),
+                        meta.get("district_city"),
+                        meta.get("sign_language_type"),
+                        meta.get("variety_name"),
+                        meta.get("sign_language"),
+                        meta.get("gesture_name"),
+                        meta.get("meaning"),
+                        meta.get("category"),
+                        meta.get("gesture_type"),
+                        meta.get("contributor_id"),
+                        meta.get("rejection_reason"),
+                        meta.get("created_at", 0.0),
+                        meta.get("updated_at", 0.0),
+                        json.dumps(meta),
+                    ),
+                )
+                conn.commit()
+        except Exception as exc:
+            logger.warning("Could not upsert contribution %s to SQLite: %s", meta.get("contribution_id"), exc)
+
+    def _sync_disk_to_db(self) -> None:
+        try:
+            for state_dir in [self.pending_dir, self.approved_dir, self.rejected_dir]:
+                if not state_dir.is_dir():
+                    continue
+                for meta_path in state_dir.rglob("metadata.json"):
+                    try:
+                        with open(meta_path, "r", encoding="utf-8") as f:
+                            meta = json.load(f)
+                        cid_dir = meta_path.parent
+                        videos = list(cid_dir.glob("original_video.*"))
+                        video_path_str = str(videos[0]) if videos else None
+                        self._upsert_db(meta, video_path_str)
+                    except Exception as err:
+                        logger.debug("Sync skip for %s: %s", meta_path, err)
+        except Exception as exc:
+            logger.warning("Failed disk to DB synchronization: %s", exc)
 
     # ------------------------------------------------------------------ Validation
     def _validate_id(self, contribution_id: str) -> str:
@@ -139,7 +290,7 @@ class ContributionService:
     # ------------------------------------------------------------------ Upload Video
     async def handle_video_upload(self, file: UploadFile) -> ContributionMetadata:
         """Validate, store uploaded video, and initialize contribution draft."""
-        original_filename = file.filename or "video.mp4"
+        original_filename = Path(file.filename or "video.mp4").name
         ext = Path(original_filename).suffix.lower()
 
         if ext not in ALLOWED_EXTENSIONS:
@@ -190,6 +341,13 @@ class ContributionService:
 
         duration = (total_frames / fps) if fps > 0 and total_frames > 0 else 0.0
 
+        if duration < MIN_DURATION_SECONDS:
+            shutil.rmtree(contrib_dir, ignore_errors=True)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Video duration ({duration:.2f}s) is too short. Minimum required is {MIN_DURATION_SECONDS}s",
+            )
+
         if duration > MAX_DURATION_SECONDS:
             shutil.rmtree(contrib_dir, ignore_errors=True)
             raise HTTPException(
@@ -221,6 +379,7 @@ class ContributionService:
         )
 
         self._write_metadata(contrib_dir, metadata.model_dump())
+        self._upsert_db(metadata.model_dump(), str(video_path))
         logger.info("New contribution uploaded: %s (%s, %.1fs)", cid, original_filename, duration)
         return metadata
 
@@ -252,6 +411,10 @@ class ContributionService:
             raise HTTPException(status_code=400, detail="Unable to read video file")
 
         fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or meta.get("total_video_frames", 0))
+        if total_frames >= 3 and total_frames < sample_interval * 3:
+            sample_interval = max(1, total_frames // 3)
+
         frames_dir = contrib_dir / "frames"
         # Clear existing frames
         for f in frames_dir.glob("*.jpg"):
@@ -362,6 +525,7 @@ class ContributionService:
 
         self._write_metadata(contrib_dir, meta)
         self._write_frames_metadata(contrib_dir, extracted_metadata)
+        self._upsert_db(meta, str(video_path))
 
         logger.info(
             "Extracted %d frames from %s (%d usable, interval=%d)",
@@ -395,6 +559,16 @@ class ContributionService:
             raise HTTPException(status_code=404, detail=f"Frame '{frame_id}' not found")
         return frame_path
 
+    def get_video_file_path(self, contribution_id: str) -> Path:
+        contrib_dir, _ = self._get_contribution_dir(contribution_id)
+        video_files = list(contrib_dir.glob("original_video.*"))
+        if not video_files or not video_files[0].is_file():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Original video file for contribution '{contribution_id}' not found",
+            )
+        return video_files[0]
+
     def delete_frame(self, contribution_id: str, frame_id: str) -> dict[str, Any]:
         """Mark or remove an individual frame from contribution dataset."""
         contrib_dir, state = self._get_contribution_dir(contribution_id)
@@ -424,6 +598,8 @@ class ContributionService:
         meta["usable_frame_count"] = usable
         meta["updated_at"] = time.time()
         self._write_metadata(contrib_dir, meta)
+        vfiles = list(contrib_dir.glob("original_video.*"))
+        self._upsert_db(meta, str(vfiles[0]) if vfiles else None)
 
         return {"contribution_id": contribution_id, "frame_id": fid, "status": "removed", "usable_count": usable}
 
@@ -440,6 +616,12 @@ class ContributionService:
         meta = self._read_metadata(contrib_dir)
         frames = self._read_frames_metadata(contrib_dir)
         active_count = sum(1 for f in frames if f["status"] == "active")
+
+        # Auto-extract frames if not yet extracted
+        if active_count < 3 and len(frames) == 0:
+            self.extract_and_validate_frames(contribution_id)
+            frames = self._read_frames_metadata(contrib_dir)
+            active_count = sum(1 for f in frames if f["status"] == "active")
 
         if active_count < 3:
             raise HTTPException(
@@ -499,6 +681,9 @@ class ContributionService:
                 shutil.rmtree(target_dir)
             shutil.move(str(contrib_dir), str(target_dir))
             contrib_dir = target_dir
+
+        new_video_files = list(contrib_dir.glob("original_video.*"))
+        self._upsert_db(meta, str(new_video_files[0]) if new_video_files else None)
 
         logger.info(
             "Contribution %s submitted for approval: %s [%s / %s - %s]",
@@ -595,6 +780,9 @@ class ContributionService:
             if dest_dir.exists():
                 shutil.rmtree(dest_dir)
             shutil.move(str(contrib_dir), str(dest_dir))
+
+        reviewed_video_files = list(dest_dir.glob("original_video.*"))
+        self._upsert_db(meta, str(reviewed_video_files[0]) if reviewed_video_files else None)
 
         status_str = "APPROVED" if approved else "REJECTED"
         logger.info("Contribution %s %s [Region: %s, State: %s]", cid, status_str, region, state)

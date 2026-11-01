@@ -45,6 +45,9 @@ async function request<T>(
   init?: RequestInit
 ): Promise<T> {
   const url = `${BASE_URL}${input}`;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 8000);
+
   let res: Response;
   try {
     res = await fetch(url, {
@@ -220,6 +223,9 @@ export async function predictImage({
     formData.append("session_id", sessionId);
   }
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 8000);
+
   let res: Response;
   try {
     res = await fetch(`${BASE_URL}/predict`, {
@@ -229,6 +235,7 @@ export async function predictImage({
         // Do not set Content-Type; the browser sets multipart boundary automatically.
         ...(sessionId ? { "X-Session-Id": sessionId } : {}),
       },
+      signal: controller.signal,
     });
   } catch (err) {
     if (!BACKEND_URL) {
@@ -521,17 +528,25 @@ export type ApprovedDatasetResponse = {
   total_pages: number;
 };
 
+export function getContributionVideoUrl(contributionId: string): string {
+  return `${BASE_URL}/contributions/${contributionId}/video`;
+}
+
 export async function uploadContributionVideo(
   file: File
 ): Promise<ContributionUploadResponse> {
   const formData = new FormData();
   formData.append("file", file);
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 60000);
+
   let res: Response;
   try {
     res = await fetch(`${BASE_URL}/contributions/upload`, {
       method: "POST",
       body: formData,
+      signal: controller.signal,
     });
   } catch (err) {
     if (!BACKEND_URL) {
@@ -540,6 +555,8 @@ export async function uploadContributionVideo(
       );
     }
     throw err;
+  } finally {
+    clearTimeout(timeoutId);
   }
 
   if (!res.ok) {

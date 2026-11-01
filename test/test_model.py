@@ -31,3 +31,13 @@ def test_num_classes_configurable() -> None:
     with torch.inference_mode():
         output = model(torch.randn(1, 3, 224, 224))
     assert output.shape == (1, 5)
+
+
+def test_rcnn_architecture_and_output_shape() -> None:
+    model = build_model("r_cnn", num_classes=22, pretrained=False)
+    model.eval()
+    with torch.inference_mode():
+        features, probs = model(torch.randn(2, 3, 224, 224))
+    assert features.shape == (2, 512, 7, 7)
+    assert probs.shape == (2, 22)
+    assert torch.allclose(probs.sum(dim=-1), torch.ones(2), atol=1e-4)

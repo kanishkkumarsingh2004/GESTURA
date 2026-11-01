@@ -19,6 +19,7 @@ import {
   getFrameImageUrl,
   getDatasetStats,
   getApprovedDataset,
+  getContributionVideoUrl,
   type ContributionMetadata,
   type FrameMetadata,
   type QualityReport,
@@ -338,7 +339,6 @@ export default function ContributePage() {
 
   // Submit contribution (India-First)
   const handleSubmit = async () => {
-    if (!contributionId) return;
     const finalCat = category === "Custom" ? customCategory.trim() : category;
 
     if (!region) {
@@ -365,16 +365,36 @@ export default function ContributePage() {
       setErrorMsg("Please select or enter a category.");
       return;
     }
-    if (usableFramesCount < 3) {
-      setErrorMsg("At least 3 valid active frames are required for submission.");
-      return;
-    }
 
     setIsSubmitting(true);
     setErrorMsg(null);
 
     try {
-      const updated = await submitContribution(contributionId, {
+      let currentCid = contributionId;
+
+      // Auto upload & extract if user hasn't explicitly clicked "Process Video & Extract"
+      if (!currentCid && selectedFile) {
+        setIsUploading(true);
+        setUploadProgress(40);
+        const uploadRes = await uploadContributionVideo(selectedFile);
+        currentCid = uploadRes.contribution_id;
+        setContributionId(currentCid);
+        setIsUploading(false);
+
+        setIsExtracting(true);
+        const extractRes = await extractContributionFrames(currentCid, sampleInterval, maxFrames);
+        setFrames(extractRes.frames || []);
+        setQualityReport(extractRes.quality_report);
+        setIsExtracting(false);
+      }
+
+      if (!currentCid) {
+        setErrorMsg("Please select and upload a video before submitting.");
+        setIsSubmitting(false);
+        return;
+      }
+
+      const updated = await submitContribution(currentCid, {
         country: "India",
         region,
         state: selectedState,
@@ -394,6 +414,8 @@ export default function ContributePage() {
       setErrorMsg(err.message || "Submission failed");
     } finally {
       setIsSubmitting(false);
+      setIsUploading(false);
+      setIsExtracting(false);
     }
   };
 
@@ -532,6 +554,20 @@ export default function ContributePage() {
                       <span className="text-yellow-accent">{contributionMeta.contribution_id}</span>
                     </div>
                     <div className="flex justify-between">
+                      <span className="text-text-muted">Original Video File:</span>
+                      <span className="text-text-primary font-medium truncate max-w-[200px]" title={contributionMeta.video_filename}>
+                        {contributionMeta.video_filename}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-text-muted">Backend Storage:</span>
+                      <span className="text-status-success font-medium">Persisted in SQLite & Disk</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-text-muted">Review Status:</span>
+                      <span className="text-yellow-accent font-semibold uppercase">{contributionMeta.status}</span>
+                    </div>
+                    <div className="flex justify-between">
                       <span className="text-text-muted">Country & Region:</span>
                       <span className="text-text-primary font-semibold">
                         India • {contributionMeta.region}
@@ -565,6 +601,17 @@ export default function ContributePage() {
                     <div className="flex justify-between">
                       <span className="text-text-muted">Motion Dynamics:</span>
                       <span className="uppercase">{contributionMeta.gesture_type}</span>
+                    </div>
+                    <div className="pt-2 border-t border-surface-border flex justify-end">
+                      <a
+                        href={getContributionVideoUrl(contributionMeta.contribution_id)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-yellow-accent hover:underline flex items-center gap-1 font-sans text-xs"
+                      >
+                        <FileVideo className="w-3.5 h-3.5" />
+                        Download / Stream Stored Video
+                      </a>
                     </div>
                   </div>
                 )}
@@ -1151,9 +1198,19 @@ export default function ContributePage() {
                     {/* Submission summary bar & CTA */}
                     <div className="pt-3 border-t border-surface-border space-y-3">
                       <div className="flex items-center justify-between text-xs text-text-secondary font-mono">
-                        <span>Quality Threshold:</span>
-                        <span className={usableFramesCount >= 3 ? "text-status-success font-bold" : "text-status-error font-bold"}>
-                          {usableFramesCount >= 3 ? "Ready (≥ 3 frames)" : "Insufficient (< 3 frames)"}
+                        <span>Pipeline Status:</span>
+                        <span className={
+                          !contributionId && selectedFile
+                            ? "text-yellow-accent font-bold"
+                            : usableFramesCount >= 3
+                            ? "text-status-success font-bold"
+                            : "text-status-error font-bold"
+                        }>
+                          {!contributionId && selectedFile
+                            ? "Ready to process & submit"
+                            : usableFramesCount >= 3
+                            ? "Ready (≥ 3 frames)"
+                            : "Insufficient (< 3 frames)"}
                         </span>
                       </div>
 
@@ -1162,8 +1219,8 @@ export default function ContributePage() {
                         size="md"
                         className="w-full font-semibold shadow-md shadow-yellow-accent/10"
                         onClick={handleSubmit}
-                        disabled={!contributionId || usableFramesCount < 3 || isSubmitting}
-                        isLoading={isSubmitting}
+                        disabled={(!contributionId && !selectedFile) || isSubmitting || isUploading || isExtracting}
+                        isLoading={isSubmitting || isUploading || isExtracting}
                       >
                         <Send className="w-4 h-4 mr-2" />
                         Submit to India Moderation Queue
